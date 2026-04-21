@@ -1176,9 +1176,10 @@ function adminUiPage(env) {
         gap: 16px;
       }
       .wrap {
-        max-width: 1340px;
+        width: min(1660px, calc(100vw - 24px));
+        max-width: none;
         margin: 0 auto;
-        padding: 24px 24px 60px;
+        padding: 22px 12px 60px;
         display: flex;
         flex-direction: column;
         gap: 16px;
@@ -1230,10 +1231,10 @@ function adminUiPage(env) {
         box-shadow: 0 18px 50px var(--shadow);
       }
       .header-card {
-        padding: 22px 24px 20px;
+        padding: 22px 26px 20px;
       }
       .section-card {
-        padding: 18px 20px 20px;
+        padding: 18px 24px 20px;
       }
       .panel-shell[hidden] {
         display: none;
@@ -1529,12 +1530,15 @@ function adminUiPage(env) {
       }
       .table-shell {
         margin-top: 16px;
-        overflow: hidden;
+        overflow-x: auto;
+        overflow-y: hidden;
       }
       table {
         width: 100%;
+        min-width: 1180px;
         border-collapse: collapse;
         font-size: 13px;
+        table-layout: auto;
       }
       thead {
         background: var(--surface-2);
@@ -1547,15 +1551,75 @@ function adminUiPage(env) {
         letter-spacing: 0.07em;
         text-transform: uppercase;
         color: var(--muted);
-        padding: 10px 14px;
+        padding: 11px 18px;
         text-align: left;
         white-space: nowrap;
       }
       td {
-        padding: 12px 14px;
+        padding: 15px 18px;
         border-bottom: 1px solid var(--border);
         vertical-align: top;
         text-align: left;
+      }
+      .events-table th:nth-child(1),
+      .events-table td:nth-child(1) {
+        min-width: 240px;
+      }
+      .events-table th:nth-child(2),
+      .events-table td:nth-child(2) {
+        min-width: 158px;
+      }
+      .events-table th:nth-child(3),
+      .events-table td:nth-child(3) {
+        min-width: 132px;
+      }
+      .events-table th:nth-child(4),
+      .events-table td:nth-child(4) {
+        min-width: 132px;
+      }
+      .events-table th:nth-child(5),
+      .events-table td:nth-child(5) {
+        min-width: 140px;
+      }
+      .events-table th:nth-child(6),
+      .events-table td:nth-child(6) {
+        min-width: 118px;
+      }
+      .events-table th:nth-child(7),
+      .events-table td:nth-child(7) {
+        min-width: 220px;
+      }
+      .events-table th:nth-child(8),
+      .events-table td:nth-child(8) {
+        min-width: 170px;
+      }
+      .tokens-table th:nth-child(1),
+      .tokens-table td:nth-child(1) {
+        min-width: 228px;
+      }
+      .tokens-table th:nth-child(2),
+      .tokens-table td:nth-child(2) {
+        min-width: 158px;
+      }
+      .tokens-table th:nth-child(3),
+      .tokens-table td:nth-child(3) {
+        min-width: 130px;
+      }
+      .tokens-table th:nth-child(4),
+      .tokens-table td:nth-child(4) {
+        min-width: 110px;
+      }
+      .tokens-table th:nth-child(5),
+      .tokens-table td:nth-child(5) {
+        min-width: 320px;
+      }
+      .tokens-table th:nth-child(6),
+      .tokens-table td:nth-child(6) {
+        min-width: 140px;
+      }
+      .tokens-table th:nth-child(7),
+      .tokens-table td:nth-child(7) {
+        min-width: 140px;
       }
       tbody tr {
         transition: background 0.1s;
@@ -1572,6 +1636,8 @@ function adminUiPage(env) {
         font-weight: 500;
         color: var(--ink);
         display: block;
+        line-height: 1.45;
+        word-break: break-word;
       }
       .cell-email .token-id {
         font-family: var(--mono);
@@ -1581,7 +1647,7 @@ function adminUiPage(env) {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        max-width: 220px;
+        max-width: 340px;
       }
       .ts {
         font-family: var(--mono);
@@ -1604,6 +1670,9 @@ function adminUiPage(env) {
         font-family: var(--mono);
         font-size: 11px;
         color: var(--muted);
+        line-height: 1.45;
+        white-space: normal;
+        overflow-wrap: anywhere;
       }
       .tag {
         display: inline-flex;
@@ -1667,6 +1736,9 @@ function adminUiPage(env) {
         font-family: var(--mono);
         color: var(--muted);
         line-height: 1.7;
+        max-width: 320px;
+        white-space: normal;
+        overflow-wrap: anywhere;
       }
       .review-cell .unreviewed {
         color: var(--dim);
@@ -1676,6 +1748,7 @@ function adminUiPage(env) {
         display: flex;
         gap: 6px;
         flex-wrap: nowrap;
+        min-width: 156px;
       }
       .actions button,
       .actions a.button-link {
@@ -1742,6 +1815,17 @@ function adminUiPage(env) {
       .table-msg.error {
         color: var(--red);
       }
+      @media (max-width: 1280px) {
+        .wrap {
+          width: min(100%, calc(100vw - 20px));
+          padding: 18px 10px 48px;
+        }
+        .header-card,
+        .section-card {
+          padding-left: 20px;
+          padding-right: 20px;
+        }
+      }
       @media (max-width: 980px) {
         .controls-grid,
         .toolbar.events-toolbar,
@@ -1749,9 +1833,6 @@ function adminUiPage(env) {
         .toolbar.email-toolbar,
         .toolbar.email-actions-toolbar {
           grid-template-columns: 1fr;
-        }
-        .table-shell {
-          overflow-x: auto;
         }
         table {
           min-width: 980px;
@@ -1843,7 +1924,7 @@ function adminUiPage(env) {
           <div class="status-note">Latest 150 events</div>
         </div>
         <section class="table-shell">
-          <table>
+          <table class="events-table">
             <thead>
               <tr>
                 <th>Email / Token ID</th>
@@ -1886,7 +1967,7 @@ function adminUiPage(env) {
           <div class="status-note">Most recent manual links</div>
         </div>
         <section class="table-shell">
-          <table>
+          <table class="tokens-table">
             <thead>
               <tr>
                 <th>Email / Token ID</th>

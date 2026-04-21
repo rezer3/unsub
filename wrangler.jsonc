@@ -7,6 +7,16 @@
   "observability": {
     "enabled": true
   },
+  "routes": [
+    {
+      "pattern": "thecaseup.com",
+      "custom_domain": true
+    },
+    {
+      "pattern": "unsubscribe.merimack.com",
+      "custom_domain": true
+    }
+  ],
   "d1_databases": [
     {
       "binding": "UNSUB_DB",
