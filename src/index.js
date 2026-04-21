@@ -591,7 +591,7 @@ function successPage({ email, autoSuppressed }) {
     : "Your unsubscribe request has been received.";
   const detailText = autoSuppressed
     ? "You have been added to the suppression list for this token scope."
-    : "No automatic suppression is enabled yet. This request is now visible in the dashboard for review.";
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -655,7 +655,7 @@ function successPage({ email, autoSuppressed }) {
   <body>
     <main class="card">
       <h1>${actionText}</h1>
-      <p>${detailText}</p>
+      ${detailText ? `<p>${detailText}</p>` : ""}
       ${email ? `<p class="email">${email}</p>` : ""}
     </main>
   </body>
