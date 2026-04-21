@@ -709,242 +709,599 @@ function adminUiPage(env) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Unsubscribe Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
     <style>
       :root {
         color-scheme: light;
-        --bg: #f7f3ea;
-        --panel: #fffdf8;
-        --ink: #1d1a16;
-        --muted: #6f6658;
-        --accent: #9f412e;
-        --accent-2: #2f6c64;
-        --accent-3: #27465b;
-        --border: #dbcdb4;
-        --shadow: rgba(53, 42, 24, 0.12);
+        --bg: #f0f2f5;
+        --surface: #ffffff;
+        --surface-2: #f6f7f9;
+        --surface-3: #eff4ff;
+        --border: #e2e5eb;
+        --border-2: #d0d4dc;
+        --ink: #111827;
+        --muted: #6b7280;
+        --dim: #9ca3af;
+        --green: #0d9256;
+        --green-bg: #edfbf4;
+        --green-border: #a7e9c9;
+        --red: #c9273e;
+        --red-bg: #fef2f4;
+        --red-border: #f5b8c1;
+        --amber: #b45309;
+        --amber-bg: #fffbeb;
+        --amber-border: #fcd88a;
+        --blue: #1d4ed8;
+        --blue-light: #eff4ff;
+        --slate: #475569;
+        --slate-bg: #f1f5f9;
+        --mono: "IBM Plex Mono", monospace;
+        --sans: "DM Sans", sans-serif;
+        --radius: 7px;
+        --radius-lg: 12px;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.07), 0 1px 2px rgba(0, 0, 0, 0.05);
       }
-      * { box-sizing: border-box; }
-      body {
+      * {
+        box-sizing: border-box;
         margin: 0;
-        font-family: Georgia, "Times New Roman", serif;
-        background:
-          radial-gradient(circle at top left, rgba(159, 65, 46, 0.12), transparent 24rem),
-          linear-gradient(180deg, #efe7d7 0%, var(--bg) 100%);
+        padding: 0;
+      }
+      body {
+        font-family: var(--sans);
+        background: var(--bg);
         color: var(--ink);
+        min-height: 100vh;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        height: 52px;
+        padding: 0 24px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        box-shadow: var(--shadow);
+        display: flex;
+        align-items: center;
+        gap: 16px;
       }
       .wrap {
-        width: min(1200px, calc(100% - 2rem));
-        margin: 2rem auto 4rem;
+        max-width: 1340px;
+        margin: 0 auto;
+        padding: 24px 24px 60px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
       }
-      .hero,
-      .panel-shell,
+      .topbar-logo {
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--ink);
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+      }
+      .topbar-logo span {
+        color: var(--muted);
+        font-weight: 400;
+      }
+      .topbar-sep {
+        flex: 1;
+      }
+      .topbar-meta {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .pulse {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 0 rgba(13, 146, 86, 0.5);
+        animation: pulse 2.6s ease infinite;
+        display: inline-block;
+      }
+      @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(13, 146, 86, 0.45); }
+        70% { box-shadow: 0 0 0 6px rgba(13, 146, 86, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(13, 146, 86, 0); }
+      }
+      .header-card,
+      .section-card,
       .table-shell,
       .result-card {
-        background: var(--panel);
+        background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 24px;
+        border-radius: var(--radius-lg);
         box-shadow: 0 18px 50px var(--shadow);
       }
-      .hero {
-        padding: 1.5rem;
+      .header-card {
+        padding: 22px 24px 20px;
       }
-      .panel-shell {
-        margin-top: 1.2rem;
-        padding: 1.3rem;
-      }
-      h1 {
-        margin: 0;
-        font-size: clamp(2rem, 4vw, 3.2rem);
-        line-height: 1.02;
-      }
-      .sub {
-        margin: 0.8rem 0 0;
-        color: var(--muted);
-        font-size: 1.02rem;
-        line-height: 1.55;
-      }
-      .admin-grid,
-      .toolbar {
-        display: grid;
-        gap: 0.85rem;
-        margin-top: 1.2rem;
-      }
-      .admin-grid {
-        grid-template-columns: 1fr 1fr;
-      }
-      .toolbar.events-toolbar {
-        grid-template-columns: 1.2fr 0.9fr 0.8fr auto;
-      }
-      .toolbar.generator-toolbar {
-        grid-template-columns: 1.35fr auto;
-      }
-      input, select, button, a.button-link {
-        font: inherit;
-      }
-      input, select {
-        width: 100%;
-        border: 1px solid var(--border);
-        background: #fff;
-        border-radius: 14px;
-        padding: 0.8rem 0.9rem;
-        color: var(--ink);
-      }
-      button,
-      a.button-link {
-        border: 0;
-        border-radius: 14px;
-        padding: 0.8rem 1rem;
-        cursor: pointer;
-        background: var(--accent);
-        color: #fff8f2;
-        font-weight: 700;
-        text-decoration: none;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-      }
-      button.secondary,
-      a.button-link.secondary {
-        background: var(--accent-2);
-      }
-      button.ghost,
-      a.button-link.ghost {
-        background: rgba(39, 70, 91, 0.1);
-        color: var(--accent-3);
-      }
-      .tabs {
-        display: inline-flex;
-        gap: 0.55rem;
-        margin-top: 1.25rem;
-        padding: 0.35rem;
-        border-radius: 18px;
-        background: rgba(29, 26, 22, 0.05);
-      }
-      .tab {
-        background: transparent;
-        color: var(--muted);
-        padding: 0.75rem 1rem;
-      }
-      .tab.is-active {
-        background: var(--panel);
-        color: var(--ink);
-        box-shadow: inset 0 0 0 1px rgba(219, 205, 180, 0.9);
+      .section-card {
+        padding: 18px 20px 20px;
       }
       .panel-shell[hidden] {
         display: none;
       }
+      h1 {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--ink);
+        letter-spacing: -0.02em;
+      }
+      h2 {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--ink);
+        letter-spacing: -0.01em;
+      }
+      .sub {
+        margin-top: 5px;
+        font-size: 12.5px;
+        color: var(--muted);
+        line-height: 1.55;
+        max-width: 760px;
+      }
+      .sub code,
+      .notice code {
+        font-family: var(--mono);
+        font-size: 11px;
+        background: var(--blue-light);
+        border: 1px solid #c7d8fc;
+        border-radius: 4px;
+        padding: 1px 5px;
+        color: var(--blue);
+      }
+      .meta-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .meta-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        border: 1px solid var(--border-2);
+        background: var(--slate-bg);
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--slate);
+      }
+      .meta-chip::before {
+        content: "";
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+        flex-shrink: 0;
+      }
+      .meta-chip.ok {
+        color: var(--green);
+        background: var(--green-bg);
+        border-color: var(--green-border);
+      }
+      .meta-chip.warn {
+        color: var(--amber);
+        background: var(--amber-bg);
+        border-color: var(--amber-border);
+      }
+      .meta-chip.neutral {
+        color: var(--slate);
+        background: var(--slate-bg);
+        border-color: var(--border-2);
+      }
+      .toolbar,
+      .tab-strip,
+      .controls-grid {
+        margin-top: 16px;
+      }
+      .controls-grid,
+      .toolbar {
+        display: grid;
+        gap: 10px;
+      }
+      .controls-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .toolbar.events-toolbar {
+        grid-template-columns: 1.25fr 180px auto auto;
+      }
+      .toolbar.generator-toolbar {
+        grid-template-columns: 1.35fr auto;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .field-inline {
+        display: flex;
+        align-items: flex-end;
+      }
+      .field-label {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--muted);
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+      input,
+      select,
+      button,
+      a.button-link {
+        font: inherit;
+      }
+      input, select {
+        width: 100%;
+        background: var(--surface);
+        border: 1px solid var(--border-2);
+        border-radius: var(--radius);
+        padding: 8px 11px;
+        color: var(--ink);
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s;
+      }
+      input::placeholder {
+        color: var(--dim);
+      }
+      input:focus,
+      select:focus {
+        border-color: #93b4f8;
+        box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.08);
+      }
+      select {
+        cursor: pointer;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 11px center;
+        padding-right: 30px;
+      }
+      button,
+      a.button-link {
+        border: none;
+        border-radius: var(--radius);
+        padding: 8.5px 18px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+        transition: background 0.15s;
+      }
+      .btn-primary {
+        background: var(--ink);
+        color: #fff;
+        box-shadow: var(--shadow);
+      }
+      .btn-primary:hover {
+        background: #1f2937;
+      }
+      .btn-ghost,
+      a.button-link.ghost {
+        background: var(--surface);
+        color: var(--ink);
+        border: 1px solid var(--border-2);
+      }
+      .btn-ghost:hover,
+      a.button-link.ghost:hover {
+        background: var(--surface-2);
+      }
+      .tab-strip {
+        display: inline-flex;
+        gap: 8px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 12px;
+      }
+      .tab {
+        padding: 8px 2px;
+        border-radius: 0;
+        background: transparent;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        position: relative;
+      }
+      .tab.is-active {
+        background: transparent;
+        color: var(--ink);
+      }
+      .tab.is-active::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -13px;
+        height: 2px;
+        background: var(--ink);
+      }
+      .panel-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
       .statusbar {
         display: flex;
         justify-content: space-between;
-        gap: 1rem;
         align-items: center;
-        margin: 1rem 0 0;
+        gap: 12px;
+        align-items: center;
+        margin-top: 16px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
         color: var(--muted);
-        font-size: 0.98rem;
+        font-size: 12px;
+        flex-wrap: wrap;
+      }
+      .status-summary {
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--green);
+      }
+      .status-note {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
       }
       .notice {
-        border-radius: 18px;
-        padding: 0.95rem 1rem;
-        margin-bottom: 1rem;
+        border-radius: var(--radius);
+        padding: 12px 14px;
         line-height: 1.5;
+        font-size: 12px;
+        border: 1px solid transparent;
       }
       .notice.warn {
-        background: rgba(159, 65, 46, 0.08);
-        color: var(--accent);
+        background: var(--amber-bg);
+        color: var(--amber);
+        border-color: var(--amber-border);
       }
       .notice.ok {
-        background: rgba(47, 108, 100, 0.1);
-        color: var(--accent-2);
+        background: var(--green-bg);
+        color: var(--green);
+        border-color: var(--green-border);
       }
       .table-shell {
-        margin-top: 1.1rem;
+        margin-top: 16px;
         overflow: hidden;
       }
       table {
         width: 100%;
         border-collapse: collapse;
+        font-size: 13px;
       }
-      th, td {
-        padding: 0.95rem 1rem;
-        border-bottom: 1px solid rgba(219, 205, 180, 0.7);
+      thead {
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--muted);
+        padding: 10px 14px;
+        text-align: left;
+        white-space: nowrap;
+      }
+      td {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
         vertical-align: top;
         text-align: left;
       }
-      th {
-        background: rgba(159, 65, 46, 0.06);
-        font-size: 0.88rem;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
+      tbody tr {
+        transition: background 0.1s;
+      }
+      tbody tr:hover {
+        background: var(--surface-2);
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      .cell-email strong {
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--ink);
+        display: block;
+      }
+      .cell-email .token-id {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--dim);
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 220px;
+      }
+      .ts {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .scope-badge {
+        font-family: var(--mono);
+        font-size: 11px;
+        background: var(--slate-bg);
+        border: 1px solid var(--border-2);
+        border-radius: 4px;
+        padding: 2px 7px;
+        color: var(--slate);
+        white-space: nowrap;
+        display: inline-block;
+      }
+      .method-text {
+        font-family: var(--mono);
+        font-size: 11px;
         color: var(--muted);
       }
-      tr:last-child td { border-bottom: 0; }
       .tag {
         display: inline-flex;
         align-items: center;
-        gap: 0.35rem;
-        padding: 0.25rem 0.55rem;
-        border-radius: 999px;
-        background: rgba(47, 108, 100, 0.09);
-        color: var(--accent-2);
-        font-size: 0.82rem;
-        font-weight: 700;
+        gap: 5px;
+        padding: 3px 9px;
+        border-radius: 20px;
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        border: 1px solid transparent;
+      }
+      .tag::before {
+        content: "";
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        flex-shrink: 0;
       }
       .tag.received,
       .tag.unsigned {
-        background: rgba(159, 65, 46, 0.1);
-        color: var(--accent);
+        background: var(--amber-bg);
+        color: var(--amber);
+        border-color: var(--amber-border);
+      }
+      .tag.received::before,
+      .tag.unsigned::before {
+        background: var(--amber);
       }
       .tag.reviewed,
       .tag.signed {
-        background: rgba(47, 108, 100, 0.1);
-        color: var(--accent-2);
+        background: var(--green-bg);
+        color: var(--green);
+        border-color: var(--green-border);
+      }
+      .tag.reviewed::before,
+      .tag.signed::before {
+        background: var(--green);
       }
       .tag.suppressed {
-        background: rgba(29, 26, 22, 0.09);
-        color: #1d1a16;
+        background: var(--red-bg);
+        color: var(--red);
+        border-color: var(--red-border);
+      }
+      .tag.suppressed::before {
+        background: var(--red);
       }
       .tag.ignored {
-        background: rgba(111, 102, 88, 0.14);
-        color: #5a5044;
+        background: var(--slate-bg);
+        color: var(--slate);
+        border-color: var(--border-2);
+      }
+      .tag.ignored::before {
+        background: var(--slate);
+      }
+      .review-cell {
+        font-size: 11px;
+        font-family: var(--mono);
+        color: var(--muted);
+        line-height: 1.7;
+      }
+      .review-cell .unreviewed {
+        color: var(--dim);
+        font-style: italic;
       }
       .actions {
         display: flex;
-        gap: 0.5rem;
-        flex-wrap: wrap;
+        gap: 6px;
+        flex-wrap: nowrap;
       }
       .actions button,
       .actions a.button-link {
-        padding: 0.55rem 0.7rem;
-        font-size: 0.88rem;
+        padding: 5px 11px;
+        font-size: 11px;
+        border-radius: 5px;
+      }
+      .btn-action {
+        font-weight: 600;
+        border: 1px solid transparent;
+      }
+      .btn-review {
+        background: var(--green-bg);
+        color: var(--green);
+        border-color: var(--green-border);
+      }
+      .btn-review:hover {
+        background: #d4f5e6;
+      }
+      .btn-suppress {
+        background: var(--red-bg);
+        color: var(--red);
+        border-color: var(--red-border);
+      }
+      .btn-suppress:hover {
+        background: #fce2e6;
       }
       .muted {
         color: var(--muted);
-        font-size: 0.9rem;
+        font-size: 12px;
       }
       .mono {
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-family: var(--mono);
         word-break: break-all;
       }
       .result-card {
-        margin-top: 1rem;
-        padding: 1rem;
+        margin-top: 16px;
+        padding: 16px;
       }
       .result-head {
         display: flex;
         justify-content: space-between;
-        gap: 1rem;
+        gap: 14px;
         align-items: center;
+        flex-wrap: wrap;
       }
       .link-box {
-        margin-top: 0.85rem;
-        padding: 0.9rem 1rem;
-        border-radius: 18px;
-        background: rgba(39, 70, 91, 0.06);
+        margin-top: 12px;
+        padding: 12px 14px;
+        border-radius: var(--radius);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
       }
       .link-cell a {
-        color: var(--accent-3);
+        color: var(--blue);
+      }
+      .table-msg {
+        padding: 28px 16px;
+        text-align: center;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .table-msg.error {
+        color: var(--red);
       }
       @media (max-width: 980px) {
-        .admin-grid,
+        .controls-grid,
         .toolbar.events-toolbar,
         .toolbar.generator-toolbar {
           grid-template-columns: 1fr;
@@ -956,82 +1313,138 @@ function adminUiPage(env) {
           min-width: 980px;
         }
       }
+      @media (max-width: 560px) {
+        .topbar {
+          padding: 0 14px;
+        }
+        .wrap {
+          padding: 16px 14px 40px;
+        }
+        .topbar-meta .label {
+          display: none;
+        }
+      }
     </style>
   </head>
   <body>
+    <header class="topbar">
+      <div class="topbar-logo">unsub<span>/admin</span></div>
+      <div class="topbar-sep"></div>
+      <div class="topbar-meta">
+        <span class="pulse"></span>
+        <span class="label">auto-refresh 30s</span>
+        <span id="lastUpdated"></span>
+      </div>
+    </header>
+
     <div class="wrap">
-      <section class="hero">
+      <section class="header-card">
         <h1>Unsubscribe Console</h1>
         <p class="sub">
           Event-only mode is active. Requests are logged here and are not automatically enforced unless the Worker is configured to auto-suppress.
           Use <code>/u/:token</code> for body-link clicks and <code>POST /api/unsubscribe/:token</code> for endpoint testing.
         </p>
-        <div class="admin-grid">
-          <input id="reviewer" type="text" placeholder="Operator name or email" />
-          <input id="adminToken" type="password" placeholder="Admin token if ADMIN_API_TOKEN is set" />
+        <div class="meta-strip">
+          <span id="autoSuppressChip" class="meta-chip"></span>
+          <span id="signingChip" class="meta-chip"></span>
         </div>
-        <div class="tabs" role="tablist" aria-label="Unsubscribe admin tabs">
+        <div class="controls-grid">
+          <div class="field">
+            <label class="field-label" for="reviewer">Operator</label>
+            <input id="reviewer" type="text" placeholder="name or email" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="adminToken">Admin token</label>
+            <input id="adminToken" type="password" placeholder="Bearer token if ADMIN_API_TOKEN is set" />
+          </div>
+        </div>
+        <div class="tab-strip" role="tablist" aria-label="Unsubscribe admin tabs">
           <button id="tab-events" class="tab is-active" type="button" data-tab-target="events" role="tab" aria-controls="panel-events" aria-selected="true">Unsubscribe events</button>
           <button id="tab-generate" class="tab" type="button" data-tab-target="generate" role="tab" aria-controls="panel-generate" aria-selected="false">Generate token</button>
         </div>
       </section>
 
-      <section id="panel-events" class="panel-shell" data-panel="events" role="tabpanel" aria-labelledby="tab-events">
-        <div class="toolbar events-toolbar">
-          <input id="emailFilter" type="text" placeholder="Filter by email" />
-          <select id="statusFilter">
-            <option value="">All statuses</option>
-            <option value="received">Received</option>
-            <option value="reviewed">Reviewed</option>
-            <option value="suppressed">Suppressed</option>
-            <option value="ignored">Ignored</option>
-          </select>
-          <div class="muted" style="display:flex;align-items:center;padding:0 0.2rem;">
-            Auto suppress: <strong style="margin-left:0.35rem;">${isTruthy(env.AUTO_SUPPRESS_UNSUB) ? "On" : "Off"}</strong>
+      <section id="panel-events" class="section-card panel-shell" data-panel="events" role="tabpanel" aria-labelledby="tab-events">
+        <div class="panel-head">
+          <div>
+            <h2>Unsubscribe event queue</h2>
+            <p class="sub">Review inbound unsubscribe requests, track status, and optionally suppress later when you are ready to enforce.</p>
           </div>
-          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
+        <div class="toolbar events-toolbar">
+          <div class="field">
+            <label class="field-label" for="emailFilter">Filter by email</label>
+            <input id="emailFilter" type="text" placeholder="user@domain.com" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="statusFilter">Status</label>
+            <select id="statusFilter">
+              <option value="">All statuses</option>
+              <option value="received">Received</option>
+              <option value="reviewed">Reviewed</option>
+              <option value="suppressed">Suppressed</option>
+              <option value="ignored">Ignored</option>
+            </select>
+          </div>
+          <div class="field-inline">
+            <span class="meta-chip ${isTruthy(env.AUTO_SUPPRESS_UNSUB) ? "ok" : "warn"}">${isTruthy(env.AUTO_SUPPRESS_UNSUB) ? "Auto suppress on" : "Auto suppress off"}</span>
+          </div>
+          <div class="field-inline">
+            <button id="refreshBtn" class="btn-primary" type="button">Refresh</button>
+          </div>
         </div>
         <div class="statusbar">
-          <div id="eventsSummary">Loading…</div>
-          <div id="eventsLastUpdated"></div>
+          <div id="eventsSummary" class="status-summary">Loading…</div>
+          <div class="status-note">Latest 150 events</div>
         </div>
         <section class="table-shell">
           <table>
             <thead>
               <tr>
-                <th>Email</th>
+                <th>Email / Token ID</th>
                 <th>Timestamp</th>
                 <th>Scope</th>
                 <th>Method</th>
                 <th>Source</th>
-                <th>Current Status</th>
+                <th>Status</th>
                 <th>Review</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="eventsBody">
-              <tr><td colspan="8" class="muted">Loading events…</td></tr>
+              <tr><td colspan="8" class="table-msg">Loading events…</td></tr>
             </tbody>
           </table>
         </section>
       </section>
 
-      <section id="panel-generate" class="panel-shell" data-panel="generate" role="tabpanel" aria-labelledby="tab-generate" hidden>
+      <section id="panel-generate" class="section-card panel-shell" data-panel="generate" role="tabpanel" aria-labelledby="tab-generate" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Manual footer-link generation</h2>
+            <p class="sub">Generate one-off unsubscribe links for direct Gmail sends and keep a history of every link created from this console.</p>
+          </div>
+        </div>
         <div id="generatorNotice" class="notice"></div>
         <div class="toolbar generator-toolbar">
-          <input id="generateEmail" type="email" placeholder="recipient@example.com" />
-          <button id="generateBtn" type="button">Generate token</button>
+          <div class="field">
+            <label class="field-label" for="generateEmail">Recipient email</label>
+            <input id="generateEmail" type="email" placeholder="recipient@example.com" />
+          </div>
+          <div class="field-inline">
+            <button id="generateBtn" class="btn-primary" type="button">Generate token</button>
+          </div>
         </div>
         <section id="generatedResult" class="result-card" hidden></section>
         <div class="statusbar">
-          <div id="tokensSummary">Loading…</div>
-          <div id="tokensLastUpdated"></div>
+          <div id="tokensSummary" class="status-summary">Loading…</div>
+          <div class="status-note">Most recent manual links</div>
         </div>
         <section class="table-shell">
           <table>
             <thead>
               <tr>
-                <th>Email</th>
+                <th>Email / Token ID</th>
                 <th>Generated</th>
                 <th>Scope</th>
                 <th>Type</th>
@@ -1041,7 +1454,7 @@ function adminUiPage(env) {
               </tr>
             </thead>
             <tbody id="generatedTokensBody">
-              <tr><td colspan="7" class="muted">Loading generated tokens…</td></tr>
+              <tr><td colspan="7" class="table-msg">Loading generated tokens…</td></tr>
             </tbody>
           </table>
         </section>
@@ -1064,14 +1477,15 @@ function adminUiPage(env) {
       const refreshBtn = document.getElementById("refreshBtn");
       const eventsBody = document.getElementById("eventsBody");
       const eventsSummary = document.getElementById("eventsSummary");
-      const eventsLastUpdated = document.getElementById("eventsLastUpdated");
+      const lastUpdated = document.getElementById("lastUpdated");
       const generatorNotice = document.getElementById("generatorNotice");
       const generateEmailInput = document.getElementById("generateEmail");
       const generateBtn = document.getElementById("generateBtn");
       const generatedResult = document.getElementById("generatedResult");
       const generatedTokensBody = document.getElementById("generatedTokensBody");
       const tokensSummary = document.getElementById("tokensSummary");
-      const tokensLastUpdated = document.getElementById("tokensLastUpdated");
+      const autoSuppressChip = document.getElementById("autoSuppressChip");
+      const signingChip = document.getElementById("signingChip");
       const tabButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
       const panels = Array.from(document.querySelectorAll("[data-panel]"));
 
@@ -1105,6 +1519,18 @@ function adminUiPage(env) {
           hour: "numeric",
           minute: "2-digit",
         }).format(date);
+      }
+
+      function setUpdatedLabel() {
+        lastUpdated.textContent = "updated " + formatTimestamp(new Date().toISOString());
+      }
+
+      function renderMetaChips() {
+        autoSuppressChip.className = "meta-chip " + (uiConfig.autoSuppress ? "ok" : "warn");
+        autoSuppressChip.textContent = uiConfig.autoSuppress ? "Auto suppress on" : "Auto suppress off";
+
+        signingChip.className = "meta-chip " + (uiConfig.signingSecretConfigured ? "ok" : "neutral");
+        signingChip.textContent = uiConfig.signingSecretConfigured ? "Signed tokens ready" : "Unsigned token fallback";
       }
 
       function tabNameFromHash(hash) {
@@ -1184,30 +1610,37 @@ function adminUiPage(env) {
 
       function renderEvents() {
         if (!state.events.length) {
-          eventsBody.innerHTML = '<tr><td colspan="8" class="muted">No unsubscribe events yet.</td></tr>';
+          eventsBody.innerHTML = '<tr><td colspan="8" class="table-msg">No unsubscribe events yet.</td></tr>';
           eventsSummary.textContent = "0 events";
           return;
         }
 
         eventsBody.innerHTML = state.events.map((event) => {
           const reviewBits = [];
-          if (event.reviewed_by) reviewBits.push("by " + escapeHtml(event.reviewed_by));
-          if (event.reviewed_at) reviewBits.push(formatTimestamp(event.reviewed_at));
+          if (event.reviewed_by) reviewBits.push(escapeHtml(event.reviewed_by));
+          if (event.reviewed_at) reviewBits.push(escapeHtml(formatTimestamp(event.reviewed_at)));
           if (event.notes) reviewBits.push(escapeHtml(event.notes));
 
           return \`
             <tr>
-              <td><strong>\${escapeHtml(event.email || "")}</strong><div class="muted">\${escapeHtml(event.token_id || "")}</div></td>
-              <td>\${escapeHtml(formatTimestamp(event.created_at))}</td>
-              <td>\${escapeHtml(event.scope_label || event.scope_type || "global")}</td>
-              <td>\${escapeHtml(event.method || "")}</td>
-              <td>\${escapeHtml(event.source || "")}</td>
+              <td class="cell-email">
+                <strong>\${escapeHtml(event.email || "")}</strong>
+                \${event.token_id ? \`<div class="token-id">\${escapeHtml(event.token_id)}</div>\` : ""}
+              </td>
+              <td><span class="ts">\${escapeHtml(formatTimestamp(event.created_at))}</span></td>
+              <td><span class="scope-badge">\${escapeHtml(event.scope_label || event.scope_type || "global")}</span></td>
+              <td><span class="method-text">\${escapeHtml(event.method || "")}</span></td>
+              <td><span class="method-text">\${escapeHtml(event.source || "")}</span></td>
               <td><span class="tag \${escapeHtml(event.status || "received")}">\${escapeHtml(event.status || "received")}</span></td>
-              <td><div class="muted">\${reviewBits.join("<br />") || "Unreviewed"}</div></td>
+              <td>
+                <div class="review-cell">
+                  \${reviewBits.join("<br />") || '<span class="unreviewed">Unreviewed</span>'}
+                </div>
+              </td>
               <td>
                 <div class="actions">
-                  <button type="button" data-event-action="review" data-id="\${escapeHtml(event.id)}" class="secondary">Mark Reviewed</button>
-                  <button type="button" data-event-action="suppress" data-id="\${escapeHtml(event.id)}">Suppress</button>
+                  <button type="button" data-event-action="review" data-id="\${escapeHtml(event.id)}" class="btn-action btn-review">Mark Reviewed</button>
+                  <button type="button" data-event-action="suppress" data-id="\${escapeHtml(event.id)}" class="btn-action btn-suppress">Suppress</button>
                 </div>
               </td>
             </tr>
@@ -1232,12 +1665,12 @@ function adminUiPage(env) {
         generatedResult.innerHTML = \`
           <div class="result-head">
             <span class="tag \${typeClass}">\${typeLabel}</span>
-            <span class="muted">\${escapeHtml(formatTimestamp(token.created_at))}</span>
+            <span class="ts">\${escapeHtml(formatTimestamp(token.created_at))}</span>
           </div>
-          <p class="muted" style="margin:0.9rem 0 0;">Use this full link in the email footer for <strong>\${escapeHtml(token.email || "")}</strong>.</p>
+          <p class="muted" style="margin-top:12px;">Use this full link in the email footer for <strong>\${escapeHtml(token.email || "")}</strong>.</p>
           <div class="link-box mono"><a href="\${escapeHtml(token.token_url || "")}" target="_blank" rel="noreferrer">\${escapeHtml(token.token_url || "")}</a></div>
-          <div class="actions" style="margin-top:0.85rem;">
-            <button type="button" class="secondary" data-copy-url="\${escapeHtml(token.token_url || "")}">Copy link</button>
+          <div class="actions" style="margin-top:12px;">
+            <button type="button" class="btn-action btn-review" data-copy-url="\${escapeHtml(token.token_url || "")}">Copy link</button>
             <a class="button-link ghost" href="\${escapeHtml(token.token_url || "")}" target="_blank" rel="noreferrer">Open</a>
           </div>
         \`;
@@ -1245,7 +1678,7 @@ function adminUiPage(env) {
 
       function renderManualTokens() {
         if (!state.manualTokens.length) {
-          generatedTokensBody.innerHTML = '<tr><td colspan="7" class="muted">No manual tokens generated yet.</td></tr>';
+          generatedTokensBody.innerHTML = '<tr><td colspan="7" class="table-msg">No manual tokens generated yet.</td></tr>';
           tokensSummary.textContent = "0 tokens";
           return;
         }
@@ -1255,15 +1688,18 @@ function adminUiPage(env) {
           const typeLabel = token.signed ? "Signed" : "Unsigned";
           return \`
             <tr>
-              <td><strong>\${escapeHtml(token.email || "")}</strong><div class="muted">\${escapeHtml(token.token_id || "")}</div></td>
-              <td>\${escapeHtml(formatTimestamp(token.created_at))}</td>
-              <td>\${escapeHtml(token.scope_label || token.scope_type || "global")}</td>
-              <td><span class="tag \${typeClass}">\${typeLabel}</span><div class="muted">\${escapeHtml(token.token_version || "")}</div></td>
+              <td class="cell-email">
+                <strong>\${escapeHtml(token.email || "")}</strong>
+                \${token.token_id ? \`<div class="token-id">\${escapeHtml(token.token_id)}</div>\` : ""}
+              </td>
+              <td><span class="ts">\${escapeHtml(formatTimestamp(token.created_at))}</span></td>
+              <td><span class="scope-badge">\${escapeHtml(token.scope_label || token.scope_type || "global")}</span></td>
+              <td><span class="tag \${typeClass}">\${typeLabel}</span><div class="method-text" style="margin-top:4px;">\${escapeHtml(token.token_version || "")}</div></td>
               <td class="link-cell"><a class="mono" href="\${escapeHtml(token.token_url || "")}" target="_blank" rel="noreferrer">\${escapeHtml(token.token_url || "")}</a></td>
-              <td>\${escapeHtml(token.created_by || "manual")}</td>
+              <td><span class="method-text">\${escapeHtml(token.created_by || "manual")}</span></td>
               <td>
                 <div class="actions">
-                  <button type="button" class="secondary" data-copy-url="\${escapeHtml(token.token_url || "")}">Copy link</button>
+                  <button type="button" class="btn-action btn-review" data-copy-url="\${escapeHtml(token.token_url || "")}">Copy link</button>
                 </div>
               </td>
             </tr>
@@ -1282,14 +1718,14 @@ function adminUiPage(env) {
         const data = await fetchJson("/api/admin/events?" + params.toString());
         state.events = Array.isArray(data.events) ? data.events : [];
         renderEvents();
-        eventsLastUpdated.textContent = "Updated " + formatTimestamp(new Date().toISOString());
+        setUpdatedLabel();
       }
 
       async function loadManualTokens() {
         const data = await fetchJson("/api/admin/generated-tokens?limit=150");
         state.manualTokens = Array.isArray(data.tokens) ? data.tokens : [];
         renderManualTokens();
-        tokensLastUpdated.textContent = "Updated " + formatTimestamp(new Date().toISOString());
+        setUpdatedLabel();
       }
 
       async function generateToken() {
@@ -1308,6 +1744,7 @@ function adminUiPage(env) {
         if (typeof data.signing_secret_configured === "boolean") {
           uiConfig.signingSecretConfigured = data.signing_secret_configured;
         }
+        renderMetaChips();
         renderGeneratorNotice();
         renderLatestGenerated();
         generateEmailInput.value = "";
@@ -1391,15 +1828,17 @@ function adminUiPage(env) {
         setActiveTab(tabNameFromHash(window.location.hash), { skipHash: true });
       });
 
+      renderMetaChips();
       renderGeneratorNotice();
       renderLatestGenerated();
       setActiveTab(tabNameFromHash(window.location.hash), { skipHash: true });
+      setUpdatedLabel();
 
       loadEvents().catch((error) => {
-        eventsBody.innerHTML = '<tr><td colspan="8" class="muted">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
+        eventsBody.innerHTML = '<tr><td colspan="8" class="table-msg error">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
       });
       loadManualTokens().catch((error) => {
-        generatedTokensBody.innerHTML = '<tr><td colspan="7" class="muted">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
+        generatedTokensBody.innerHTML = '<tr><td colspan="7" class="table-msg error">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
       });
       setInterval(() => {
         loadEvents().catch(() => {});
