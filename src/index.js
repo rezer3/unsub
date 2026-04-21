@@ -162,6 +162,7 @@ function eventStatusLabel(status) {
 
 function deriveReviewer(request, body) {
   return (
+    cleanText(body?.created_by, 200) ||
     cleanText(body?.reviewed_by, 200) ||
     cleanText(request.headers.get("CF-Access-Authenticated-User-Email") || "", 200) ||
     cleanText(request.headers.get("x-auth-request-email") || "", 200) ||
@@ -190,6 +191,125 @@ function buildScopeLabel(event) {
   const scopeType = cleanText(event?.scope_type, 80) || "global";
   const scopeKey = cleanText(event?.scope_key, 200);
   return scopeKey ? `${scopeType}:${scopeKey}` : scopeType;
+}
+
+async function buildTokenValue(env, payload) {
+  const payloadText = JSON.stringify(payload);
+  const payloadSegment = base64UrlEncodeUtf8(payloadText);
+  const secret = cleanText(env.UNSUB_SIGNING_SECRET || "", 500);
+
+  if (secret) {
+    const signature = await hmacSha256Hex(secret, payloadSegment);
+    return {
+      token: `v1.${payloadSegment}.${signature}`,
+      token_version: "v1",
+      signed: true,
+      payload_text: payloadText,
+    };
+  }
+
+  return {
+    token: `u1.${payloadSegment}`,
+    token_version: "u1",
+    signed: false,
+    payload_text: payloadText,
+  };
+}
+
+async function createManualToken(request, env, input = {}) {
+  const email = cleanText(input.email, 320);
+  const emailNormalized = normalizeEmail(email);
+  if (!emailNormalized) throw new Error("missing_email");
+
+  const createdAt = nowIso();
+  const scopeType = cleanText(input.scope_type, 80) || "global";
+  const scopeKey = cleanText(input.scope_key, 200);
+  const createdBy = deriveReviewer(request, input);
+  const tokenId = cleanText(input.token_id, 120) || crypto.randomUUID();
+  const payload = {
+    email,
+    scope_type: scopeType,
+    scope_key: scopeKey,
+    source: cleanText(input.source, 120) || "manual_ui",
+    method: cleanText(input.method, 80) || "body_link_manual",
+    token_id: tokenId,
+    issued_at: createdAt,
+  };
+  const encoded = await buildTokenValue(env, payload);
+  const origin = cleanText(env.PUBLIC_BASE_URL || "", 500) || new URL(request.url).origin;
+  const tokenUrl = `${origin}/u/${encoded.token}`;
+
+  const row = {
+    id: crypto.randomUUID(),
+    created_at: createdAt,
+    created_by: createdBy,
+    email,
+    email_normalized: emailNormalized,
+    scope_type: scopeType,
+    scope_key: scopeKey,
+    source: cleanText(payload.source, 120) || "manual_ui",
+    method: cleanText(payload.method, 80) || "body_link_manual",
+    token_id: tokenId,
+    token_version: encoded.token_version,
+    signed: encoded.signed ? 1 : 0,
+    token_value: encoded.token,
+    token_url: tokenUrl,
+    payload_json: JSON.stringify(payload),
+    notes: cleanText(input.notes, 2000) || null,
+  };
+
+  await d1Exec(
+    env.UNSUB_DB,
+    `INSERT INTO manual_unsubscribe_tokens
+     (id, created_at, created_by, email, email_normalized, scope_type, scope_key, source, method, token_id, token_version, signed, token_value, token_url, payload_json, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      row.id,
+      row.created_at,
+      row.created_by,
+      row.email,
+      row.email_normalized,
+      row.scope_type,
+      row.scope_key,
+      row.source,
+      row.method,
+      row.token_id,
+      row.token_version,
+      row.signed,
+      row.token_value,
+      row.token_url,
+      row.payload_json,
+      row.notes,
+    ]
+  );
+
+  return {
+    ...row,
+    signed: !!row.signed,
+    scope_label: buildScopeLabel(row),
+  };
+}
+
+async function listManualTokens(env, url) {
+  const limitRaw = Number(url.searchParams.get("limit") || 100);
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 250) : 100;
+
+  const res = await d1All(
+    env.UNSUB_DB,
+    `SELECT id, created_at, created_by, email, email_normalized, scope_type, scope_key, source,
+            method, token_id, token_version, signed, token_url, notes
+     FROM manual_unsubscribe_tokens
+     ORDER BY created_at DESC
+     LIMIT ?`,
+    [limit]
+  );
+
+  const rows = Array.isArray(res?.results) ? res.results : [];
+  return rows.map((row) => ({
+    ...row,
+    signed: Number(row.signed) === 1,
+    scope_label: buildScopeLabel(row),
+  }));
 }
 
 async function recordUnsubscribeEvent(env, request, claims, options = {}) {
@@ -375,6 +495,29 @@ async function listAdminEvents(env, url) {
   }));
 }
 
+async function handleGenerateToken(request, env) {
+  const body = await request.json().catch(() => null);
+
+  let tokenRow;
+  try {
+    tokenRow = await createManualToken(request, env, {
+      email: body?.email,
+      created_by: body?.created_by,
+      notes: body?.notes,
+      scope_type: body?.scope_type,
+      scope_key: body?.scope_key,
+    });
+  } catch (error) {
+    return json({ ok: false, error: cleanText(error?.message, 200) || "token_generation_failed" }, 400);
+  }
+
+  return json({
+    ok: true,
+    token: tokenRow,
+    signing_secret_configured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
+  });
+}
+
 async function handleMarkReviewed(request, env) {
   const body = await request.json().catch(() => null);
   const id = cleanText(body?.id, 120);
@@ -554,13 +697,18 @@ function errorPage(title, message, status = 400) {
   );
 }
 
-function adminUiPage() {
+function adminUiPage(env) {
+  const uiConfig = JSON.stringify({
+    autoSuppress: isTruthy(env.AUTO_SUPPRESS_UNSUB),
+    signingSecretConfigured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
+  });
+
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Unsubscribe Events</title>
+    <title>Unsubscribe Console</title>
     <style>
       :root {
         color-scheme: light;
@@ -570,6 +718,7 @@ function adminUiPage() {
         --muted: #6f6658;
         --accent: #9f412e;
         --accent-2: #2f6c64;
+        --accent-3: #27465b;
         --border: #dbcdb4;
         --shadow: rgba(53, 42, 24, 0.12);
       }
@@ -586,12 +735,21 @@ function adminUiPage() {
         width: min(1200px, calc(100% - 2rem));
         margin: 2rem auto 4rem;
       }
-      .hero {
+      .hero,
+      .panel-shell,
+      .table-shell,
+      .result-card {
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 24px;
-        padding: 1.5rem 1.5rem 1.2rem;
         box-shadow: 0 18px 50px var(--shadow);
+      }
+      .hero {
+        padding: 1.5rem;
+      }
+      .panel-shell {
+        margin-top: 1.2rem;
+        padding: 1.3rem;
       }
       h1 {
         margin: 0;
@@ -604,13 +762,22 @@ function adminUiPage() {
         font-size: 1.02rem;
         line-height: 1.55;
       }
+      .admin-grid,
       .toolbar {
         display: grid;
         gap: 0.85rem;
-        grid-template-columns: 1.2fr 0.9fr 0.8fr auto;
-        margin-top: 1.35rem;
+        margin-top: 1.2rem;
       }
-      input, select, button {
+      .admin-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .toolbar.events-toolbar {
+        grid-template-columns: 1.2fr 0.9fr 0.8fr auto;
+      }
+      .toolbar.generator-toolbar {
+        grid-template-columns: 1.35fr auto;
+      }
+      input, select, button, a.button-link {
         font: inherit;
       }
       input, select {
@@ -621,7 +788,8 @@ function adminUiPage() {
         padding: 0.8rem 0.9rem;
         color: var(--ink);
       }
-      button {
+      button,
+      a.button-link {
         border: 0;
         border-radius: 14px;
         padding: 0.8rem 1rem;
@@ -629,9 +797,40 @@ function adminUiPage() {
         background: var(--accent);
         color: #fff8f2;
         font-weight: 700;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
       }
-      button.secondary {
+      button.secondary,
+      a.button-link.secondary {
         background: var(--accent-2);
+      }
+      button.ghost,
+      a.button-link.ghost {
+        background: rgba(39, 70, 91, 0.1);
+        color: var(--accent-3);
+      }
+      .tabs {
+        display: inline-flex;
+        gap: 0.55rem;
+        margin-top: 1.25rem;
+        padding: 0.35rem;
+        border-radius: 18px;
+        background: rgba(29, 26, 22, 0.05);
+      }
+      .tab {
+        background: transparent;
+        color: var(--muted);
+        padding: 0.75rem 1rem;
+      }
+      .tab.is-active {
+        background: var(--panel);
+        color: var(--ink);
+        box-shadow: inset 0 0 0 1px rgba(219, 205, 180, 0.9);
+      }
+      .panel-shell[hidden] {
+        display: none;
       }
       .statusbar {
         display: flex;
@@ -642,13 +841,23 @@ function adminUiPage() {
         color: var(--muted);
         font-size: 0.98rem;
       }
+      .notice {
+        border-radius: 18px;
+        padding: 0.95rem 1rem;
+        margin-bottom: 1rem;
+        line-height: 1.5;
+      }
+      .notice.warn {
+        background: rgba(159, 65, 46, 0.08);
+        color: var(--accent);
+      }
+      .notice.ok {
+        background: rgba(47, 108, 100, 0.1);
+        color: var(--accent-2);
+      }
       .table-shell {
-        margin-top: 1.2rem;
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 24px;
+        margin-top: 1.1rem;
         overflow: hidden;
-        box-shadow: 0 18px 50px var(--shadow);
       }
       table {
         width: 100%;
@@ -679,16 +888,31 @@ function adminUiPage() {
         font-size: 0.82rem;
         font-weight: 700;
       }
-      .tag.received { background: rgba(159, 65, 46, 0.1); color: var(--accent); }
-      .tag.reviewed { background: rgba(47, 108, 100, 0.1); color: var(--accent-2); }
-      .tag.suppressed { background: rgba(29, 26, 22, 0.09); color: #1d1a16; }
-      .tag.ignored { background: rgba(111, 102, 88, 0.14); color: #5a5044; }
+      .tag.received,
+      .tag.unsigned {
+        background: rgba(159, 65, 46, 0.1);
+        color: var(--accent);
+      }
+      .tag.reviewed,
+      .tag.signed {
+        background: rgba(47, 108, 100, 0.1);
+        color: var(--accent-2);
+      }
+      .tag.suppressed {
+        background: rgba(29, 26, 22, 0.09);
+        color: #1d1a16;
+      }
+      .tag.ignored {
+        background: rgba(111, 102, 88, 0.14);
+        color: #5a5044;
+      }
       .actions {
         display: flex;
         gap: 0.5rem;
         flex-wrap: wrap;
       }
-      .actions button {
+      .actions button,
+      .actions a.button-link {
         padding: 0.55rem 0.7rem;
         font-size: 0.88rem;
       }
@@ -696,8 +920,33 @@ function adminUiPage() {
         color: var(--muted);
         font-size: 0.9rem;
       }
+      .mono {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        word-break: break-all;
+      }
+      .result-card {
+        margin-top: 1rem;
+        padding: 1rem;
+      }
+      .result-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: center;
+      }
+      .link-box {
+        margin-top: 0.85rem;
+        padding: 0.9rem 1rem;
+        border-radius: 18px;
+        background: rgba(39, 70, 91, 0.06);
+      }
+      .link-cell a {
+        color: var(--accent-3);
+      }
       @media (max-width: 980px) {
-        .toolbar {
+        .admin-grid,
+        .toolbar.events-toolbar,
+        .toolbar.generator-toolbar {
           grid-template-columns: 1fr;
         }
         .table-shell {
@@ -712,13 +961,23 @@ function adminUiPage() {
   <body>
     <div class="wrap">
       <section class="hero">
-        <h1>Unsubscribe Event Review</h1>
+        <h1>Unsubscribe Console</h1>
         <p class="sub">
           Event-only mode is active. Requests are logged here and are not automatically enforced unless the Worker is configured to auto-suppress.
-          Use <code>/u/:token</code> for link clicks and <code>POST /api/unsubscribe/:token</code> for endpoint testing.
+          Use <code>/u/:token</code> for body-link clicks and <code>POST /api/unsubscribe/:token</code> for endpoint testing.
         </p>
-        <div class="toolbar">
-          <input id="reviewer" type="text" placeholder="Reviewer name or email" />
+        <div class="admin-grid">
+          <input id="reviewer" type="text" placeholder="Operator name or email" />
+          <input id="adminToken" type="password" placeholder="Admin token if ADMIN_API_TOKEN is set" />
+        </div>
+        <div class="tabs" role="tablist" aria-label="Unsubscribe admin tabs">
+          <button id="tab-events" class="tab is-active" type="button" data-tab-target="events" role="tab" aria-controls="panel-events" aria-selected="true">Unsubscribe events</button>
+          <button id="tab-generate" class="tab" type="button" data-tab-target="generate" role="tab" aria-controls="panel-generate" aria-selected="false">Generate token</button>
+        </div>
+      </section>
+
+      <section id="panel-events" class="panel-shell" data-panel="events" role="tabpanel" aria-labelledby="tab-events">
+        <div class="toolbar events-toolbar">
           <input id="emailFilter" type="text" placeholder="Filter by email" />
           <select id="statusFilter">
             <option value="">All statuses</option>
@@ -727,52 +986,101 @@ function adminUiPage() {
             <option value="suppressed">Suppressed</option>
             <option value="ignored">Ignored</option>
           </select>
-          <button id="refreshBtn">Refresh</button>
-        </div>
-        <div class="toolbar" style="grid-template-columns: 1fr;">
-          <input id="adminToken" type="password" placeholder="Admin token if ADMIN_API_TOKEN is set" />
+          <div class="muted" style="display:flex;align-items:center;padding:0 0.2rem;">
+            Auto suppress: <strong style="margin-left:0.35rem;">${isTruthy(env.AUTO_SUPPRESS_UNSUB) ? "On" : "Off"}</strong>
+          </div>
+          <button id="refreshBtn" type="button">Refresh</button>
         </div>
         <div class="statusbar">
-          <div id="summary">Loading…</div>
-          <div id="lastUpdated"></div>
+          <div id="eventsSummary">Loading…</div>
+          <div id="eventsLastUpdated"></div>
         </div>
+        <section class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Timestamp</th>
+                <th>Scope</th>
+                <th>Method</th>
+                <th>Source</th>
+                <th>Current Status</th>
+                <th>Review</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="eventsBody">
+              <tr><td colspan="8" class="muted">Loading events…</td></tr>
+            </tbody>
+          </table>
+        </section>
       </section>
 
-      <section class="table-shell">
-        <table>
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Timestamp</th>
-              <th>Scope</th>
-              <th>Method</th>
-              <th>Source</th>
-              <th>Current Status</th>
-              <th>Review</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="eventsBody">
-            <tr><td colspan="8" class="muted">Loading events…</td></tr>
-          </tbody>
-        </table>
+      <section id="panel-generate" class="panel-shell" data-panel="generate" role="tabpanel" aria-labelledby="tab-generate" hidden>
+        <div id="generatorNotice" class="notice"></div>
+        <div class="toolbar generator-toolbar">
+          <input id="generateEmail" type="email" placeholder="recipient@example.com" />
+          <button id="generateBtn" type="button">Generate token</button>
+        </div>
+        <section id="generatedResult" class="result-card" hidden></section>
+        <div class="statusbar">
+          <div id="tokensSummary">Loading…</div>
+          <div id="tokensLastUpdated"></div>
+        </div>
+        <section class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Generated</th>
+                <th>Scope</th>
+                <th>Type</th>
+                <th>Link</th>
+                <th>Generated By</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="generatedTokensBody">
+              <tr><td colspan="7" class="muted">Loading generated tokens…</td></tr>
+            </tbody>
+          </table>
+        </section>
       </section>
     </div>
 
     <script>
+      const uiConfig = ${uiConfig};
       const state = {
+        activeTab: "events",
         events: [],
+        manualTokens: [],
+        latestGenerated: null,
       };
 
       const reviewerInput = document.getElementById("reviewer");
+      const adminTokenInput = document.getElementById("adminToken");
       const emailFilterInput = document.getElementById("emailFilter");
       const statusFilterSelect = document.getElementById("statusFilter");
-      const adminTokenInput = document.getElementById("adminToken");
       const refreshBtn = document.getElementById("refreshBtn");
       const eventsBody = document.getElementById("eventsBody");
-      const summary = document.getElementById("summary");
-      const lastUpdated = document.getElementById("lastUpdated");
+      const eventsSummary = document.getElementById("eventsSummary");
+      const eventsLastUpdated = document.getElementById("eventsLastUpdated");
+      const generatorNotice = document.getElementById("generatorNotice");
+      const generateEmailInput = document.getElementById("generateEmail");
+      const generateBtn = document.getElementById("generateBtn");
+      const generatedResult = document.getElementById("generatedResult");
+      const generatedTokensBody = document.getElementById("generatedTokensBody");
+      const tokensSummary = document.getElementById("tokensSummary");
+      const tokensLastUpdated = document.getElementById("tokensLastUpdated");
+      const tabButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
+      const panels = Array.from(document.querySelectorAll("[data-panel]"));
+
+      reviewerInput.value = window.localStorage.getItem("unsub_operator_name") || "";
       adminTokenInput.value = window.localStorage.getItem("unsub_admin_token") || "";
+
+      reviewerInput.addEventListener("change", () => {
+        window.localStorage.setItem("unsub_operator_name", reviewerInput.value.trim());
+      });
       adminTokenInput.addEventListener("change", () => {
         window.localStorage.setItem("unsub_admin_token", adminTokenInput.value.trim());
       });
@@ -799,10 +1107,85 @@ function adminUiPage() {
         }).format(date);
       }
 
+      function tabNameFromHash(hash) {
+        return hash === "#generate-token" ? "generate" : "events";
+      }
+
+      function tabHashFor(name) {
+        return name === "generate" ? "#generate-token" : "#unsubscribe-events";
+      }
+
+      function setActiveTab(name, options = {}) {
+        state.activeTab = name === "generate" ? "generate" : "events";
+        tabButtons.forEach((button) => {
+          const active = button.getAttribute("data-tab-target") === state.activeTab;
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        panels.forEach((panel) => {
+          panel.hidden = panel.getAttribute("data-panel") !== state.activeTab;
+        });
+        if (!options.skipHash) {
+          const nextHash = tabHashFor(state.activeTab);
+          if (window.location.hash !== nextHash) {
+            window.history.replaceState(null, "", nextHash);
+          }
+        }
+      }
+
+      function authHeaders(extra = {}) {
+        const headers = { accept: "application/json", ...extra };
+        const adminToken = adminTokenInput.value.trim();
+        if (adminToken) headers.authorization = "Bearer " + adminToken;
+        return headers;
+      }
+
+      async function fetchJson(url) {
+        const res = await fetch(url, { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || "request_failed");
+        }
+        return data;
+      }
+
+      async function postJson(url, body) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: authHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify(body || {}),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || "request_failed");
+        }
+        return data;
+      }
+
+      async function copyText(value) {
+        if (!value) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(value);
+          return;
+        }
+        window.prompt("Copy this link:", value);
+      }
+
+      function renderGeneratorNotice() {
+        if (uiConfig.signingSecretConfigured) {
+          generatorNotice.className = "notice ok";
+          generatorNotice.innerHTML = "Signed token mode is active. Generated links are ready to use in the Gmail footer.";
+          return;
+        }
+
+        generatorNotice.className = "notice warn";
+        generatorNotice.innerHTML = "No <code>UNSUB_SIGNING_SECRET</code> is set yet. Generated links will use unsigned developer tokens for now.";
+      }
+
       function renderEvents() {
         if (!state.events.length) {
           eventsBody.innerHTML = '<tr><td colspan="8" class="muted">No unsubscribe events yet.</td></tr>';
-          summary.textContent = "0 events";
+          eventsSummary.textContent = "0 events";
           return;
         }
 
@@ -823,15 +1206,71 @@ function adminUiPage() {
               <td><div class="muted">\${reviewBits.join("<br />") || "Unreviewed"}</div></td>
               <td>
                 <div class="actions">
-                  <button data-action="review" data-id="\${escapeHtml(event.id)}" class="secondary">Mark Reviewed</button>
-                  <button data-action="suppress" data-id="\${escapeHtml(event.id)}">Suppress</button>
+                  <button type="button" data-event-action="review" data-id="\${escapeHtml(event.id)}" class="secondary">Mark Reviewed</button>
+                  <button type="button" data-event-action="suppress" data-id="\${escapeHtml(event.id)}">Suppress</button>
                 </div>
               </td>
             </tr>
           \`;
         }).join("");
 
-        summary.textContent = state.events.length + " event" + (state.events.length === 1 ? "" : "s");
+        eventsSummary.textContent = state.events.length + " event" + (state.events.length === 1 ? "" : "s");
+      }
+
+      function renderLatestGenerated() {
+        if (!state.latestGenerated) {
+          generatedResult.hidden = true;
+          generatedResult.innerHTML = "";
+          return;
+        }
+
+        const token = state.latestGenerated;
+        const typeClass = token.signed ? "signed" : "unsigned";
+        const typeLabel = token.signed ? "Signed link" : "Unsigned link";
+
+        generatedResult.hidden = false;
+        generatedResult.innerHTML = \`
+          <div class="result-head">
+            <span class="tag \${typeClass}">\${typeLabel}</span>
+            <span class="muted">\${escapeHtml(formatTimestamp(token.created_at))}</span>
+          </div>
+          <p class="muted" style="margin:0.9rem 0 0;">Use this full link in the email footer for <strong>\${escapeHtml(token.email || "")}</strong>.</p>
+          <div class="link-box mono"><a href="\${escapeHtml(token.token_url || "")}" target="_blank" rel="noreferrer">\${escapeHtml(token.token_url || "")}</a></div>
+          <div class="actions" style="margin-top:0.85rem;">
+            <button type="button" class="secondary" data-copy-url="\${escapeHtml(token.token_url || "")}">Copy link</button>
+            <a class="button-link ghost" href="\${escapeHtml(token.token_url || "")}" target="_blank" rel="noreferrer">Open</a>
+          </div>
+        \`;
+      }
+
+      function renderManualTokens() {
+        if (!state.manualTokens.length) {
+          generatedTokensBody.innerHTML = '<tr><td colspan="7" class="muted">No manual tokens generated yet.</td></tr>';
+          tokensSummary.textContent = "0 tokens";
+          return;
+        }
+
+        generatedTokensBody.innerHTML = state.manualTokens.map((token) => {
+          const typeClass = token.signed ? "signed" : "unsigned";
+          const typeLabel = token.signed ? "Signed" : "Unsigned";
+          return \`
+            <tr>
+              <td><strong>\${escapeHtml(token.email || "")}</strong><div class="muted">\${escapeHtml(token.token_id || "")}</div></td>
+              <td>\${escapeHtml(formatTimestamp(token.created_at))}</td>
+              <td>\${escapeHtml(token.scope_label || token.scope_type || "global")}</td>
+              <td><span class="tag \${typeClass}">\${typeLabel}</span><div class="muted">\${escapeHtml(token.token_version || "")}</div></td>
+              <td class="link-cell"><a class="mono" href="\${escapeHtml(token.token_url || "")}" target="_blank" rel="noreferrer">\${escapeHtml(token.token_url || "")}</a></td>
+              <td>\${escapeHtml(token.created_by || "manual")}</td>
+              <td>
+                <div class="actions">
+                  <button type="button" class="secondary" data-copy-url="\${escapeHtml(token.token_url || "")}">Copy link</button>
+                </div>
+              </td>
+            </tr>
+          \`;
+        }).join("");
+
+        tokensSummary.textContent = state.manualTokens.length + " token" + (state.manualTokens.length === 1 ? "" : "s");
       }
 
       async function loadEvents() {
@@ -839,46 +1278,65 @@ function adminUiPage() {
         params.set("limit", "150");
         if (statusFilterSelect.value) params.set("status", statusFilterSelect.value);
         if (emailFilterInput.value.trim()) params.set("email", emailFilterInput.value.trim());
-        const headers = { "accept": "application/json" };
-        const adminToken = adminTokenInput.value.trim();
-        if (adminToken) headers.authorization = "Bearer " + adminToken;
 
-        const res = await fetch("/api/admin/events?" + params.toString(), {
-          headers,
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || "failed_to_load_events");
-        }
+        const data = await fetchJson("/api/admin/events?" + params.toString());
         state.events = Array.isArray(data.events) ? data.events : [];
         renderEvents();
-        lastUpdated.textContent = "Updated " + formatTimestamp(new Date().toISOString());
+        eventsLastUpdated.textContent = "Updated " + formatTimestamp(new Date().toISOString());
       }
 
-      async function postJson(url, body) {
-        const headers = {
-          "content-type": "application/json",
-          "accept": "application/json",
-        };
-        const adminToken = adminTokenInput.value.trim();
-        if (adminToken) headers.authorization = "Bearer " + adminToken;
-        const res = await fetch(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(body || {}),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || "request_failed");
-        }
-        return data;
+      async function loadManualTokens() {
+        const data = await fetchJson("/api/admin/generated-tokens?limit=150");
+        state.manualTokens = Array.isArray(data.tokens) ? data.tokens : [];
+        renderManualTokens();
+        tokensLastUpdated.textContent = "Updated " + formatTimestamp(new Date().toISOString());
       }
+
+      async function generateToken() {
+        const email = generateEmailInput.value.trim();
+        if (!email) {
+          window.alert("Enter an email address first.");
+          return;
+        }
+
+        const data = await postJson("/api/admin/generate-token", {
+          email,
+          created_by: reviewerInput.value.trim(),
+        });
+
+        state.latestGenerated = data.token || null;
+        if (typeof data.signing_secret_configured === "boolean") {
+          uiConfig.signingSecretConfigured = data.signing_secret_configured;
+        }
+        renderGeneratorNotice();
+        renderLatestGenerated();
+        generateEmailInput.value = "";
+        await loadManualTokens();
+        setActiveTab("generate");
+      }
+
+      tabButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          setActiveTab(button.getAttribute("data-tab-target"));
+        });
+      });
 
       document.addEventListener("click", async (event) => {
-        const button = event.target.closest("button[data-action]");
-        if (!button) return;
-        const action = button.getAttribute("data-action");
-        const id = button.getAttribute("data-id");
+        const copyButton = event.target.closest("button[data-copy-url]");
+        if (copyButton) {
+          try {
+            await copyText(copyButton.getAttribute("data-copy-url"));
+          } catch (error) {
+            window.alert(String(error && error.message ? error.message : error));
+          }
+          return;
+        }
+
+        const actionButton = event.target.closest("button[data-event-action]");
+        if (!actionButton) return;
+
+        const action = actionButton.getAttribute("data-event-action");
+        const id = actionButton.getAttribute("data-id");
         const reviewer = reviewerInput.value.trim();
 
         try {
@@ -908,19 +1366,45 @@ function adminUiPage() {
         }
       });
 
-      refreshBtn.addEventListener("click", () => loadEvents().catch((error) => {
-        window.alert(String(error && error.message ? error.message : error));
-      }));
+      refreshBtn.addEventListener("click", () => {
+        loadEvents().catch((error) => {
+          window.alert(String(error && error.message ? error.message : error));
+        });
+      });
 
+      generateBtn.addEventListener("click", () => {
+        generateToken().catch((error) => {
+          window.alert(String(error && error.message ? error.message : error));
+        });
+      });
+
+      generateEmailInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          generateToken().catch(() => {});
+        }
+      });
       emailFilterInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") loadEvents().catch(() => {});
       });
       statusFilterSelect.addEventListener("change", () => loadEvents().catch(() => {}));
+      window.addEventListener("hashchange", () => {
+        setActiveTab(tabNameFromHash(window.location.hash), { skipHash: true });
+      });
+
+      renderGeneratorNotice();
+      renderLatestGenerated();
+      setActiveTab(tabNameFromHash(window.location.hash), { skipHash: true });
 
       loadEvents().catch((error) => {
         eventsBody.innerHTML = '<tr><td colspan="8" class="muted">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
       });
-      setInterval(() => loadEvents().catch(() => {}), 30000);
+      loadManualTokens().catch((error) => {
+        generatedTokensBody.innerHTML = '<tr><td colspan="7" class="muted">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
+      });
+      setInterval(() => {
+        loadEvents().catch(() => {});
+        loadManualTokens().catch(() => {});
+      }, 30000);
     </script>
   </body>
 </html>`;
@@ -996,11 +1480,12 @@ export default {
         service: "unsub",
         database,
         auto_suppress_unsub: isTruthy(env.AUTO_SUPPRESS_UNSUB),
+        signing_secret_configured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
       });
     }
 
     if (request.method === "GET" && (url.pathname === "/ui" || url.pathname === "/admin")) {
-      return html(adminUiPage());
+      return html(adminUiPage(env));
     }
 
     const unsubscribeApiMatch = url.pathname.match(/^\/api\/unsubscribe\/([^/]+)$/);
@@ -1020,10 +1505,23 @@ export default {
       return json({ ok: true, events });
     }
 
+    if (request.method === "GET" && url.pathname === "/api/admin/generated-tokens") {
+      const auth = adminAuthorized(request, env);
+      if (!auth.ok) return json({ ok: false, error: "unauthorized" }, 401);
+      const tokens = await listManualTokens(env, url);
+      return json({ ok: true, tokens });
+    }
+
     if (request.method === "POST" && url.pathname === "/api/admin/mark-reviewed") {
       const auth = adminAuthorized(request, env);
       if (!auth.ok) return json({ ok: false, error: "unauthorized" }, 401);
       return handleMarkReviewed(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/admin/generate-token") {
+      const auth = adminAuthorized(request, env);
+      if (!auth.ok) return json({ ok: false, error: "unauthorized" }, 401);
+      return handleGenerateToken(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/admin/suppress") {

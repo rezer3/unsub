@@ -16,6 +16,8 @@ Cloudflare Worker scaffold for shared email suppression and unsubscribe handling
 - `GET /u/:token` logs a body-link unsubscribe event and shows a confirmation page
 - `POST /api/unsubscribe/:token` logs an API unsubscribe event and returns JSON
 - `GET /api/admin/events` returns recent unsubscribe events
+- `GET /api/admin/generated-tokens` returns recently generated manual footer links
+- `POST /api/admin/generate-token` generates a full unsubscribe link for one email and stores it
 - `POST /api/admin/mark-reviewed` marks an event as reviewed
 - `POST /api/admin/suppress` inserts a suppression entry and marks the event suppressed
 
@@ -23,11 +25,17 @@ The migrations create tables for:
 
 - `email_suppressions`
 - `unsubscribe_events`
+- `manual_unsubscribe_tokens`
 
 Supported token formats:
 
 - `u1.<base64url(json)>` for unsigned development/testing
 - `v1.<base64url(json)>.<hex_hmac>` for signed tokens using `UNSUB_SIGNING_SECRET`
+
+The `/ui` dashboard now includes:
+
+- `Unsubscribe events` tab for review workflow
+- `Generate token` tab for one-off footer links and a history table of generated tokens
 
 Suggested payload shape:
 
