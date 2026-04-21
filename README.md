@@ -29,6 +29,7 @@ The migrations create tables for:
 - `unsubscribe_events`
 - `manual_unsubscribe_tokens`
 - `admin_settings`
+- `email_notification_cooldowns`
 
 Supported token formats:
 
@@ -48,6 +49,8 @@ This Worker now supports unsubscribe-click alert emails through SendPulse.
 - Preferred auth: static `SENDPULSE_API_KEY` Worker secret.
 - Alternate auth: `SENDPULSE_CLIENT_ID` and `SENDPULSE_CLIENT_SECRET` Worker secrets.
 - Notifications only send when the `Email` tab is enabled and both a recipient and sender address are saved.
+- The first click for a recipient sends immediately, then repeat clicks for that same email are rate-limited by the configured cooldown window.
+- Every click is still written to `unsubscribe_events`, and the UI shows repeat counts even when extra alert emails are suppressed.
 - The sender address entered in the UI must already be approved in SendPulse.
 - Your SendPulse SMTP/API profile must be approved before SendPulse will actually send.
 

@@ -55,6 +55,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function isoToMs(value) {
+  const ms = Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : Number.NaN;
+}
+
 function isTruthy(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
 }
@@ -63,6 +68,18 @@ function cleanText(value, max = 500) {
   const text = String(value ?? "").trim();
   if (!text) return "";
   return text.slice(0, max);
+}
+
+function clampInteger(value, fallback, min = 1, max = 9999) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(Math.max(Math.round(number), min), max);
+}
+
+function addHoursToIso(value, hours) {
+  const baseMs = isoToMs(value);
+  const safeBaseMs = Number.isNaN(baseMs) ? Date.now() : baseMs;
+  return new Date(safeBaseMs + clampInteger(hours, 24, 1, 24 * 30) * 60 * 60 * 1000).toISOString();
 }
 
 function normalizeEmail(value) {
@@ -272,12 +289,17 @@ function defaultEmailNotificationSettings() {
     recipient_email: "",
     sender_email: "",
     subject_prefix: "[unsub]",
+    cooldown_hours: 24,
     updated_at: "",
     updated_by: "",
     last_status: "never",
     last_sent_at: "",
     last_event_id: "",
     last_message_id: "",
+    last_cooldown_at: "",
+    last_cooldown_email: "",
+    last_cooldown_until: "",
+    last_repeat_count: 0,
     last_error: "",
   };
 }
@@ -294,12 +316,17 @@ function normalizeEmailNotificationSettings(value = {}) {
   normalized.sender_email = normalizeEmail(normalized.sender_email);
   normalized.subject_prefix =
     cleanText(normalized.subject_prefix, 80) || defaults.subject_prefix;
+  normalized.cooldown_hours = clampInteger(normalized.cooldown_hours, defaults.cooldown_hours, 1, 168);
   normalized.updated_at = cleanText(normalized.updated_at, 40);
   normalized.updated_by = cleanText(normalized.updated_by, 200);
   normalized.last_status = cleanText(normalized.last_status, 40) || defaults.last_status;
   normalized.last_sent_at = cleanText(normalized.last_sent_at, 40);
   normalized.last_event_id = cleanText(normalized.last_event_id, 120);
   normalized.last_message_id = cleanText(normalized.last_message_id, 200);
+  normalized.last_cooldown_at = cleanText(normalized.last_cooldown_at, 40);
+  normalized.last_cooldown_email = cleanText(normalized.last_cooldown_email, 320);
+  normalized.last_cooldown_until = cleanText(normalized.last_cooldown_until, 40);
+  normalized.last_repeat_count = clampInteger(normalized.last_repeat_count, 0, 0, 100000);
   normalized.last_error = cleanText(normalized.last_error, 500);
   return normalized;
 }
@@ -324,6 +351,94 @@ async function updateEmailNotificationRuntime(env, patch = {}) {
   });
   await putJsonSetting(env, EMAIL_NOTIFICATION_SETTINGS_KEY, next);
   return next;
+}
+
+async function getEmailNotificationCooldown(env, emailNormalized) {
+  const normalized = normalizeEmail(emailNormalized);
+  if (!normalized) return null;
+
+  return d1First(
+    env.UNSUB_DB,
+    `SELECT email, email_normalized, window_started_at, last_event_at, last_event_id,
+            last_notified_at, last_notified_event_id, cooldown_until, repeat_count,
+            suppressed_alert_count, updated_at
+     FROM email_notification_cooldowns
+     WHERE email_normalized = ?`,
+    [normalized]
+  );
+}
+
+function isCooldownActive(row, referenceIso) {
+  const cooldownUntilMs = isoToMs(row?.cooldown_until);
+  const referenceMs = isoToMs(referenceIso);
+  if (Number.isNaN(cooldownUntilMs) || Number.isNaN(referenceMs)) return false;
+  return cooldownUntilMs > referenceMs;
+}
+
+async function beginEmailNotificationCooldown(env, event, settings) {
+  const updatedAt = nowIso();
+  const cooldownUntil = addHoursToIso(event.created_at || updatedAt, settings.cooldown_hours);
+
+  await d1Exec(
+    env.UNSUB_DB,
+    `INSERT INTO email_notification_cooldowns
+     (email_normalized, email, window_started_at, last_event_at, last_event_id,
+      last_notified_at, last_notified_event_id, cooldown_until, repeat_count,
+      suppressed_alert_count, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(email_normalized)
+     DO UPDATE SET
+       email = excluded.email,
+       window_started_at = excluded.window_started_at,
+       last_event_at = excluded.last_event_at,
+       last_event_id = excluded.last_event_id,
+       last_notified_at = excluded.last_notified_at,
+       last_notified_event_id = excluded.last_notified_event_id,
+       cooldown_until = excluded.cooldown_until,
+       repeat_count = excluded.repeat_count,
+       suppressed_alert_count = excluded.suppressed_alert_count,
+       updated_at = excluded.updated_at`,
+    [
+      event.email_normalized,
+      event.email,
+      event.created_at,
+      event.created_at,
+      event.id,
+      updatedAt,
+      event.id,
+      cooldownUntil,
+      1,
+      0,
+      updatedAt,
+    ]
+  );
+
+  return getEmailNotificationCooldown(env, event.email_normalized);
+}
+
+async function incrementEmailNotificationCooldown(env, row, event) {
+  const updatedAt = nowIso();
+
+  await d1Exec(
+    env.UNSUB_DB,
+    `UPDATE email_notification_cooldowns
+     SET email = ?,
+         last_event_at = ?,
+         last_event_id = ?,
+         repeat_count = repeat_count + 1,
+         suppressed_alert_count = suppressed_alert_count + 1,
+         updated_at = ?
+     WHERE email_normalized = ?`,
+    [
+      event.email,
+      event.created_at,
+      event.id,
+      updatedAt,
+      row.email_normalized,
+    ]
+  );
+
+  return getEmailNotificationCooldown(env, row.email_normalized);
 }
 
 function getSendPulseMode(env) {
@@ -472,6 +587,26 @@ async function maybeSendUnsubscribeNotification(env, request, event, claims, sup
     return { ok: false, skipped: "email_settings_incomplete" };
   }
 
+  const existingCooldown = await getEmailNotificationCooldown(env, event.email_normalized);
+  if (existingCooldown && isCooldownActive(existingCooldown, event.created_at || nowIso())) {
+    const nextCooldown = await incrementEmailNotificationCooldown(env, existingCooldown, event);
+    await updateEmailNotificationRuntime(env, {
+      last_status: "cooldown",
+      last_event_id: event.id,
+      last_cooldown_at: event.created_at,
+      last_cooldown_email: event.email,
+      last_cooldown_until: cleanText(nextCooldown?.cooldown_until, 40),
+      last_repeat_count: clampInteger(nextCooldown?.repeat_count, 1, 1, 100000),
+      last_error: "",
+    });
+    return {
+      ok: false,
+      skipped: "cooldown_active",
+      repeat_count: clampInteger(nextCooldown?.repeat_count, 1, 1, 100000),
+      cooldown_until: cleanText(nextCooldown?.cooldown_until, 40) || null,
+    };
+  }
+
   const origin = cleanText(env.PUBLIC_BASE_URL || "", 500) || new URL(request.url).origin;
   const payload = claims?.payload || {};
   const scopeLabel = buildScopeLabel(event);
@@ -482,6 +617,7 @@ async function maybeSendUnsubscribeNotification(env, request, event, claims, sup
     "",
     `Email: ${event.email || ""}`,
     `Timestamp: ${event.created_at || ""}`,
+    `Alert cooldown: ${settings.cooldown_hours} hours`,
     `Scope: ${scopeLabel}`,
     `Method: ${event.method || ""}`,
     `Source: ${event.source || ""}`,
@@ -497,6 +633,7 @@ async function maybeSendUnsubscribeNotification(env, request, event, claims, sup
     <ul>
       <li><strong>Email:</strong> ${escapeHtml(event.email || "")}</li>
       <li><strong>Timestamp:</strong> ${escapeHtml(event.created_at || "")}</li>
+      <li><strong>Alert cooldown:</strong> ${escapeHtml(String(settings.cooldown_hours))} hours</li>
       <li><strong>Scope:</strong> ${escapeHtml(scopeLabel)}</li>
       <li><strong>Method:</strong> ${escapeHtml(event.method || "")}</li>
       <li><strong>Source:</strong> ${escapeHtml(event.source || "")}</li>
@@ -522,17 +659,24 @@ async function maybeSendUnsubscribeNotification(env, request, event, claims, sup
       ],
     });
 
+    const cooldown = await beginEmailNotificationCooldown(env, event, settings);
+
     await updateEmailNotificationRuntime(env, {
       last_status: "sent",
       last_sent_at: nowIso(),
       last_event_id: event.id,
       last_message_id: cleanText(response?.messageId, 200),
+      last_cooldown_at: "",
+      last_cooldown_email: "",
+      last_cooldown_until: cleanText(cooldown?.cooldown_until, 40),
+      last_repeat_count: 1,
       last_error: "",
     });
 
     return {
       ok: true,
       message_id: cleanText(response?.messageId, 200) || null,
+      cooldown_until: cleanText(cooldown?.cooldown_until, 40) || null,
     };
   } catch (error) {
     const message = cleanText(error?.message || error, 500) || "email_send_failed";
@@ -822,21 +966,41 @@ async function listAdminEvents(env, url) {
   const bindings = [];
 
   if (status) {
-    where.push("status = ?");
+    where.push("e.status = ?");
     bindings.push(status);
   }
   if (email) {
-    where.push("email_normalized = ?");
+    where.push("e.email_normalized = ?");
     bindings.push(email);
   }
 
   const res = await d1All(
     env.UNSUB_DB,
-    `SELECT id, created_at, email, email_normalized, scope_type, scope_key, method, source,
-            event_type, token_id, status, reviewed_at, reviewed_by, notes
-     FROM unsubscribe_events
+    `SELECT e.id, e.created_at, e.email, e.email_normalized, e.scope_type, e.scope_key, e.method, e.source,
+            e.event_type, e.token_id, e.status, e.reviewed_at, e.reviewed_by, e.notes,
+            (
+              SELECT COUNT(*)
+              FROM unsubscribe_events AS same_email
+              WHERE same_email.email_normalized = e.email_normalized
+            ) AS total_click_count,
+            CASE
+              WHEN e.id = (
+                SELECT latest.id
+                FROM unsubscribe_events AS latest
+                WHERE latest.email_normalized = e.email_normalized
+                ORDER BY latest.created_at DESC, latest.id DESC
+                LIMIT 1
+              ) THEN 1
+              ELSE 0
+            END AS is_latest_for_email,
+            COALESCE(c.repeat_count, 0) AS notification_window_click_count,
+            COALESCE(c.suppressed_alert_count, 0) AS suppressed_alert_count,
+            c.cooldown_until
+     FROM unsubscribe_events AS e
+     LEFT JOIN email_notification_cooldowns AS c
+       ON c.email_normalized = e.email_normalized
      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-     ORDER BY created_at DESC
+     ORDER BY e.created_at DESC
      LIMIT ?`,
     [...bindings, limit]
   );
@@ -845,6 +1009,11 @@ async function listAdminEvents(env, url) {
   return rows.map((row) => ({
     ...row,
     status: eventStatusLabel(row.status),
+    total_click_count: clampInteger(row.total_click_count, 1, 1, 100000),
+    is_latest_for_email: Number(row.is_latest_for_email) === 1,
+    notification_window_click_count: clampInteger(row.notification_window_click_count, 0, 0, 100000),
+    suppressed_alert_count: clampInteger(row.suppressed_alert_count, 0, 0, 100000),
+    cooldown_until: cleanText(row.cooldown_until, 40),
     scope_label: buildScopeLabel(row),
   }));
 }
@@ -892,6 +1061,7 @@ async function handleUpdateEmailSettings(request, env) {
     recipient_email: body?.recipient_email,
     sender_email: body?.sender_email,
     subject_prefix: body?.subject_prefix,
+    cooldown_hours: body?.cooldown_hours,
     updated_by: deriveReviewer(request, body),
     updated_at: nowIso(),
   });
@@ -1335,7 +1505,7 @@ function adminUiPage(env) {
         grid-template-columns: 1fr 1fr;
       }
       .toolbar.email-actions-toolbar {
-        grid-template-columns: 1fr auto;
+        grid-template-columns: 1fr 180px auto;
       }
       .field {
         display: flex;
@@ -1591,6 +1761,10 @@ function adminUiPage(env) {
       }
       .events-table th:nth-child(8),
       .events-table td:nth-child(8) {
+        min-width: 220px;
+      }
+      .events-table th:nth-child(9),
+      .events-table td:nth-child(9) {
         min-width: 170px;
       }
       .tokens-table th:nth-child(1),
@@ -1739,6 +1913,24 @@ function adminUiPage(env) {
         max-width: 320px;
         white-space: normal;
         overflow-wrap: anywhere;
+      }
+      .repeat-cell {
+        font-size: 11px;
+        font-family: var(--mono);
+        color: var(--muted);
+        line-height: 1.65;
+        max-width: 280px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .repeat-cell strong {
+        display: block;
+        color: var(--ink);
+        font-weight: 600;
+        margin-bottom: 2px;
+      }
+      .repeat-cell .cooldown {
+        color: var(--amber);
       }
       .review-cell .unreviewed {
         color: var(--dim);
@@ -1933,12 +2125,13 @@ function adminUiPage(env) {
                 <th>Method</th>
                 <th>Source</th>
                 <th>Status</th>
+                <th>Repeat</th>
                 <th>Review</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="eventsBody">
-              <tr><td colspan="8" class="table-msg">Loading events…</td></tr>
+              <tr><td colspan="9" class="table-msg">Loading events…</td></tr>
             </tbody>
           </table>
         </section>
@@ -1990,7 +2183,7 @@ function adminUiPage(env) {
         <div class="panel-head">
           <div>
             <h2>Email notifications</h2>
-            <p class="sub">Get an alert email when someone clicks an unsubscribe link. This sends through SendPulse, so add SendPulse credentials as Worker secrets and use a sender address that SendPulse has approved.</p>
+            <p class="sub">Get an alert email when someone clicks an unsubscribe link. The first click sends immediately, and repeat clicks for the same email stay visible in the dashboard while alert emails pause for the cooldown window.</p>
           </div>
         </div>
         <div id="emailNotice" class="notice"></div>
@@ -2008,6 +2201,10 @@ function adminUiPage(env) {
           <div class="field">
             <label class="field-label" for="emailSubjectPrefix">Subject prefix</label>
             <input id="emailSubjectPrefix" type="text" placeholder="[unsub]" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="emailCooldownHours">Cooldown (hours)</label>
+            <input id="emailCooldownHours" type="number" min="1" max="168" step="1" placeholder="24" />
           </div>
           <div class="field-inline">
             <button id="saveEmailSettingsBtn" class="btn-primary" type="button">Save email settings</button>
@@ -2055,6 +2252,7 @@ function adminUiPage(env) {
       const emailRecipientInput = document.getElementById("emailRecipient");
       const emailSenderInput = document.getElementById("emailSender");
       const emailSubjectPrefixInput = document.getElementById("emailSubjectPrefix");
+      const emailCooldownHoursInput = document.getElementById("emailCooldownHours");
       const emailEnabledInput = document.getElementById("emailEnabled");
       const saveEmailSettingsBtn = document.getElementById("saveEmailSettingsBtn");
       const emailSummary = document.getElementById("emailSummary");
@@ -2193,7 +2391,7 @@ function adminUiPage(env) {
           const authLabel = uiConfig.sendpulseMode === "oauth"
             ? "SendPulse OAuth credentials"
             : "SendPulse API key";
-          emailNotice.innerHTML = authLabel + " configured. Set a recipient inbox and a SendPulse-approved sender address to receive unsubscribe-click alerts.";
+          emailNotice.innerHTML = authLabel + " configured. Set a recipient inbox, a SendPulse-approved sender address, and a cooldown window to prevent repeat-click email spam.";
           return;
         }
 
@@ -2212,14 +2410,24 @@ function adminUiPage(env) {
         emailRecipientInput.value = settings.recipient_email || "";
         emailSenderInput.value = settings.sender_email || "";
         emailSubjectPrefixInput.value = settings.subject_prefix || "[unsub]";
+        emailCooldownHoursInput.value = String(settings.cooldown_hours || 24);
         emailEnabledInput.checked = !!settings.enabled;
 
         emailSummary.textContent = settings.enabled
-          ? "Notifications enabled"
-          : "Notifications disabled";
+          ? "Notifications enabled · " + String(settings.cooldown_hours || 24) + "h cooldown"
+          : "Notifications disabled · " + String(settings.cooldown_hours || 24) + "h cooldown";
 
         if (settings.last_status === "sent" && settings.last_sent_at) {
           emailLastStatus.textContent = "Last email sent " + formatTimestamp(settings.last_sent_at);
+          return;
+        }
+        if (settings.last_status === "cooldown" && settings.last_cooldown_at) {
+          const repeatCount = Number(settings.last_repeat_count || 0);
+          const repeatLabel = repeatCount > 1 ? repeatCount + " clicks in window" : "repeat click suppressed";
+          const untilLabel = settings.last_cooldown_until
+            ? " until " + formatTimestamp(settings.last_cooldown_until)
+            : "";
+          emailLastStatus.textContent = repeatLabel + untilLabel + (settings.last_cooldown_email ? " for " + settings.last_cooldown_email : "");
           return;
         }
         if (settings.last_status === "error" && settings.last_error) {
@@ -2235,7 +2443,7 @@ function adminUiPage(env) {
 
       function renderEvents() {
         if (!state.events.length) {
-          eventsBody.innerHTML = '<tr><td colspan="8" class="table-msg">No unsubscribe events yet.</td></tr>';
+          eventsBody.innerHTML = '<tr><td colspan="9" class="table-msg">No unsubscribe events yet.</td></tr>';
           eventsSummary.textContent = "0 events";
           return;
         }
@@ -2245,6 +2453,25 @@ function adminUiPage(env) {
           if (event.reviewed_by) reviewBits.push(escapeHtml(event.reviewed_by));
           if (event.reviewed_at) reviewBits.push(escapeHtml(formatTimestamp(event.reviewed_at)));
           if (event.notes) reviewBits.push(escapeHtml(event.notes));
+
+          const totalClicks = Number(event.total_click_count || 1);
+          const windowClicks = Number(event.notification_window_click_count || 0);
+          const suppressedAlerts = Number(event.suppressed_alert_count || 0);
+          const cooldownActive = !!event.cooldown_until && Date.parse(event.cooldown_until) > Date.now();
+          const repeatBits = [];
+          let repeatTitle = totalClicks > 1 ? totalClicks + " total clicks" : "1 click";
+
+          if (event.is_latest_for_email && cooldownActive && windowClicks > 1) {
+            repeatTitle = windowClicks + " clicks in current window";
+            if (suppressedAlerts > 0) {
+              repeatBits.push(suppressedAlerts + " alert emails skipped");
+            }
+            if (event.cooldown_until) {
+              repeatBits.push('<span class="cooldown">cooldown until ' + escapeHtml(formatTimestamp(event.cooldown_until)) + "</span>");
+            }
+          } else if (!event.is_latest_for_email && totalClicks > 1) {
+            repeatBits.push("Earlier click for this email");
+          }
 
           return \`
             <tr>
@@ -2257,6 +2484,12 @@ function adminUiPage(env) {
               <td><span class="method-text">\${escapeHtml(event.method || "")}</span></td>
               <td><span class="method-text">\${escapeHtml(event.source || "")}</span></td>
               <td><span class="tag \${escapeHtml(event.status || "received")}">\${escapeHtml(event.status || "received")}</span></td>
+              <td>
+                <div class="repeat-cell">
+                  <strong>\${escapeHtml(repeatTitle)}</strong>
+                  \${repeatBits.join("<br />")}
+                </div>
+              </td>
               <td>
                 <div class="review-cell">
                   \${reviewBits.join("<br />") || '<span class="unreviewed">Unreviewed</span>'}
@@ -2397,6 +2630,7 @@ function adminUiPage(env) {
           recipient_email: emailRecipientInput.value.trim(),
           sender_email: emailSenderInput.value.trim(),
           subject_prefix: emailSubjectPrefixInput.value.trim(),
+          cooldown_hours: emailCooldownHoursInput.value.trim(),
           reviewed_by: reviewerInput.value.trim(),
         });
 
@@ -2490,6 +2724,11 @@ function adminUiPage(env) {
           saveEmailSettings().catch(() => {});
         }
       });
+      emailCooldownHoursInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          saveEmailSettings().catch(() => {});
+        }
+      });
       emailFilterInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") loadEvents().catch(() => {});
       });
@@ -2507,7 +2746,7 @@ function adminUiPage(env) {
       setUpdatedLabel();
 
       loadEvents().catch((error) => {
-        eventsBody.innerHTML = '<tr><td colspan="8" class="table-msg error">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
+        eventsBody.innerHTML = '<tr><td colspan="9" class="table-msg error">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
       });
       loadManualTokens().catch((error) => {
         generatedTokensBody.innerHTML = '<tr><td colspan="7" class="table-msg error">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
