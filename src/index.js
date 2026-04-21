@@ -74,6 +74,15 @@ function isValidEmail(value) {
   return !!email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function getBearerToken(request) {
   const header = cleanText(request.headers.get("Authorization") || "", 2000);
   if (!header.toLowerCase().startsWith("bearer ")) return "";
@@ -255,6 +264,7 @@ function buildScopeLabel(event) {
 }
 
 const EMAIL_NOTIFICATION_SETTINGS_KEY = "email_notifications";
+const SENDPULSE_API_ROOT = "https://api.sendpulse.com";
 
 function defaultEmailNotificationSettings() {
   return {
@@ -316,18 +326,140 @@ async function updateEmailNotificationRuntime(env, patch = {}) {
   return next;
 }
 
+function getSendPulseMode(env) {
+  const apiKey = cleanText(env.SENDPULSE_API_KEY || "", 4000);
+  if (apiKey) return "api_key";
+
+  const clientId = cleanText(env.SENDPULSE_CLIENT_ID || "", 500);
+  const clientSecret = cleanText(env.SENDPULSE_CLIENT_SECRET || "", 500);
+  if (clientId && clientSecret) return "oauth";
+
+  return "missing";
+}
+
+function isSendPulseConfigured(env) {
+  return getSendPulseMode(env) !== "missing";
+}
+
+async function parseJsonResponse(response) {
+  const text = await response.text();
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: cleanText(text, 2000) };
+  }
+}
+
+function sendPulseResponseMessage(data, fallback = "sendpulse_request_failed") {
+  if (!data) return fallback;
+
+  const candidates = [
+    data?.message,
+    data?.error,
+    data?.errors?.[0]?.message,
+    data?.detail,
+    typeof data?.raw === "string" ? data.raw : "",
+  ];
+
+  for (const candidate of candidates) {
+    const text = cleanText(candidate, 500);
+    if (text) return text;
+  }
+
+  return fallback;
+}
+
+function extractSendPulseMessageId(data) {
+  const candidates = [
+    data?.message_id,
+    data?.messageId,
+    data?.result?.message_id,
+    data?.result?.messageId,
+    data?.result?.id,
+    data?.id,
+  ];
+
+  for (const candidate of candidates) {
+    const value = cleanText(candidate, 200);
+    if (value) return value;
+  }
+
+  return "";
+}
+
+async function getSendPulseBearerToken(env) {
+  const apiKey = cleanText(env.SENDPULSE_API_KEY || "", 4000);
+  if (apiKey) return { token: apiKey, mode: "api_key" };
+
+  const clientId = cleanText(env.SENDPULSE_CLIENT_ID || "", 500);
+  const clientSecret = cleanText(env.SENDPULSE_CLIENT_SECRET || "", 500);
+  if (!clientId || !clientSecret) {
+    throw new Error("sendpulse_credentials_missing");
+  }
+
+  const response = await fetch(`${SENDPULSE_API_ROOT}/oauth/access_token`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      client_secret: clientSecret,
+    }),
+  });
+
+  const data = await parseJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(sendPulseResponseMessage(data, "sendpulse_auth_failed"));
+  }
+
+  const token = cleanText(data?.access_token, 4000);
+  if (!token) throw new Error("sendpulse_access_token_missing");
+  return { token, mode: "oauth" };
+}
+
+async function sendSendPulseEmail(env, payload) {
+  const auth = await getSendPulseBearerToken(env);
+  const response = await fetch(`${SENDPULSE_API_ROOT}/smtp/emails`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${auth.token}`,
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      email: payload,
+    }),
+  });
+
+  const data = await parseJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(sendPulseResponseMessage(data, "sendpulse_send_failed"));
+  }
+
+  return {
+    mode: auth.mode,
+    data,
+    messageId: extractSendPulseMessageId(data),
+  };
+}
+
 async function maybeSendUnsubscribeNotification(env, request, event, claims, suppression) {
   const settings = await getEmailNotificationSettings(env);
   if (!settings.enabled) return { ok: false, skipped: "disabled" };
 
-  if (!env.EMAIL || typeof env.EMAIL.send !== "function") {
+  if (!isSendPulseConfigured(env)) {
     await updateEmailNotificationRuntime(env, {
       last_status: "error",
-      last_error: "email_binding_missing",
+      last_error: "sendpulse_not_configured",
       last_event_id: event.id,
       last_message_id: "",
     });
-    return { ok: false, skipped: "email_binding_missing" };
+    return { ok: false, skipped: "sendpulse_not_configured" };
   }
 
   if (!isValidEmail(settings.recipient_email) || !isValidEmail(settings.sender_email)) {
@@ -363,27 +495,31 @@ async function maybeSendUnsubscribeNotification(env, request, event, claims, sup
     <h1>Unsubscribe clicked</h1>
     <p>An unsubscribe link was clicked.</p>
     <ul>
-      <li><strong>Email:</strong> ${event.email || ""}</li>
-      <li><strong>Timestamp:</strong> ${event.created_at || ""}</li>
-      <li><strong>Scope:</strong> ${scopeLabel}</li>
-      <li><strong>Method:</strong> ${event.method || ""}</li>
-      <li><strong>Source:</strong> ${event.source || ""}</li>
-      <li><strong>Status:</strong> ${finalStatus || ""}</li>
-      <li><strong>Token ID:</strong> ${event.token_id || ""}</li>
+      <li><strong>Email:</strong> ${escapeHtml(event.email || "")}</li>
+      <li><strong>Timestamp:</strong> ${escapeHtml(event.created_at || "")}</li>
+      <li><strong>Scope:</strong> ${escapeHtml(scopeLabel)}</li>
+      <li><strong>Method:</strong> ${escapeHtml(event.method || "")}</li>
+      <li><strong>Source:</strong> ${escapeHtml(event.source || "")}</li>
+      <li><strong>Status:</strong> ${escapeHtml(finalStatus || "")}</li>
+      <li><strong>Token ID:</strong> ${escapeHtml(event.token_id || "")}</li>
     </ul>
-    <p><a href="${origin}/ui#unsubscribe-events">Open the unsubscribe console</a></p>
+    <p><a href="${escapeHtml(origin)}/ui#unsubscribe-events">Open the unsubscribe console</a></p>
   `;
 
   try {
-    const response = await env.EMAIL.send({
-      to: settings.recipient_email,
-      from: {
-        email: settings.sender_email,
-        name: "Unsubscribe Alerts",
-      },
-      subject,
-      text: lines.filter(Boolean).join("\n"),
+    const response = await sendSendPulseEmail(env, {
       html: htmlBody,
+      text: lines.filter(Boolean).join("\n"),
+      subject,
+      from: {
+        name: "Unsubscribe Alerts",
+        email: settings.sender_email,
+      },
+      to: [
+        {
+          email: settings.recipient_email,
+        },
+      ],
     });
 
     await updateEmailNotificationRuntime(env, {
@@ -741,8 +877,9 @@ async function handleGetEmailSettings(env) {
   return json({
     ok: true,
     settings,
-    provider: "cloudflare_email_service",
-    email_binding_configured: !!env.EMAIL && typeof env.EMAIL.send === "function",
+    provider: "sendpulse",
+    sendpulse_configured: isSendPulseConfigured(env),
+    sendpulse_mode: getSendPulseMode(env),
   });
 }
 
@@ -776,8 +913,9 @@ async function handleUpdateEmailSettings(request, env) {
   return json({
     ok: true,
     settings: saved,
-    provider: "cloudflare_email_service",
-    email_binding_configured: !!env.EMAIL && typeof env.EMAIL.send === "function",
+    provider: "sendpulse",
+    sendpulse_configured: isSendPulseConfigured(env),
+    sendpulse_mode: getSendPulseMode(env),
   });
 }
 
@@ -918,9 +1056,9 @@ function successPage({ email, autoSuppressed }) {
   </head>
   <body>
     <main class="card">
-      <h1>${actionText}</h1>
-      ${detailText ? `<p>${detailText}</p>` : ""}
-      ${email ? `<p class="email">${email}</p>` : ""}
+      <h1>${escapeHtml(actionText)}</h1>
+      ${detailText ? `<p>${escapeHtml(detailText)}</p>` : ""}
+      ${email ? `<p class="email">${escapeHtml(email)}</p>` : ""}
     </main>
   </body>
 </html>`;
@@ -933,7 +1071,7 @@ function errorPage(title, message, status = 400) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${title}</title>
+    <title>${escapeHtml(title)}</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <style>
       body {
@@ -953,8 +1091,8 @@ function errorPage(title, message, status = 400) {
   </head>
   <body>
     <main>
-      <h1>${title}</h1>
-      <p>${message}</p>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(message)}</p>
     </main>
   </body>
 </html>`,
@@ -966,7 +1104,8 @@ function adminUiPage(env) {
   const uiConfig = JSON.stringify({
     autoSuppress: isTruthy(env.AUTO_SUPPRESS_UNSUB),
     signingSecretConfigured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
-    emailBindingConfigured: !!env.EMAIL && typeof env.EMAIL.send === "function",
+    sendpulseConfigured: isSendPulseConfigured(env),
+    sendpulseMode: getSendPulseMode(env),
   });
 
   return `<!doctype html>
@@ -1770,7 +1909,7 @@ function adminUiPage(env) {
         <div class="panel-head">
           <div>
             <h2>Email notifications</h2>
-            <p class="sub">Get an alert email when someone clicks an unsubscribe link. This uses Cloudflare Email Service, so you do not need SendPulse unless you prefer a third-party provider.</p>
+            <p class="sub">Get an alert email when someone clicks an unsubscribe link. This sends through SendPulse, so add SendPulse credentials as Worker secrets and use a sender address that SendPulse has approved.</p>
           </div>
         </div>
         <div id="emailNotice" class="notice"></div>
@@ -1968,14 +2107,17 @@ function adminUiPage(env) {
       }
 
       function renderEmailNotice() {
-        if (uiConfig.emailBindingConfigured) {
+        if (uiConfig.sendpulseConfigured) {
           emailNotice.className = "notice ok";
-          emailNotice.innerHTML = "Cloudflare Email Service binding is available. Set a recipient and a sender address on a Cloudflare-managed domain to receive unsubscribe-click alerts.";
+          const authLabel = uiConfig.sendpulseMode === "oauth"
+            ? "SendPulse OAuth credentials"
+            : "SendPulse API key";
+          emailNotice.innerHTML = authLabel + " configured. Set a recipient inbox and a SendPulse-approved sender address to receive unsubscribe-click alerts.";
           return;
         }
 
         emailNotice.className = "notice warn";
-        emailNotice.innerHTML = "This Worker does not currently have a usable email binding. The settings can still be saved, but notifications will not send until Cloudflare Email Service is active.";
+        emailNotice.innerHTML = "Notifications are not wired yet. Add <code>SENDPULSE_API_KEY</code> (recommended) or both <code>SENDPULSE_CLIENT_ID</code> and <code>SENDPULSE_CLIENT_SECRET</code> as Worker secrets.";
       }
 
       function renderEmailSettings() {
@@ -2133,8 +2275,11 @@ function adminUiPage(env) {
       async function loadEmailSettings() {
         const data = await fetchJson("/api/admin/email-settings");
         state.emailSettings = data.settings || null;
-        if (typeof data.email_binding_configured === "boolean") {
-          uiConfig.emailBindingConfigured = data.email_binding_configured;
+        if (typeof data.sendpulse_configured === "boolean") {
+          uiConfig.sendpulseConfigured = data.sendpulse_configured;
+        }
+        if (typeof data.sendpulse_mode === "string") {
+          uiConfig.sendpulseMode = data.sendpulse_mode;
         }
         renderEmailNotice();
         renderEmailSettings();
@@ -2175,8 +2320,11 @@ function adminUiPage(env) {
         });
 
         state.emailSettings = data.settings || null;
-        if (typeof data.email_binding_configured === "boolean") {
-          uiConfig.emailBindingConfigured = data.email_binding_configured;
+        if (typeof data.sendpulse_configured === "boolean") {
+          uiConfig.sendpulseConfigured = data.sendpulse_configured;
+        }
+        if (typeof data.sendpulse_mode === "string") {
+          uiConfig.sendpulseMode = data.sendpulse_mode;
         }
         renderEmailNotice();
         renderEmailSettings();
@@ -2378,7 +2526,9 @@ export default {
         database,
         auto_suppress_unsub: isTruthy(env.AUTO_SUPPRESS_UNSUB),
         signing_secret_configured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
-        email_binding_configured: !!env.EMAIL && typeof env.EMAIL.send === "function",
+        email_notification_provider: "sendpulse",
+        sendpulse_configured: isSendPulseConfigured(env),
+        sendpulse_mode: getSendPulseMode(env),
       });
     }
 

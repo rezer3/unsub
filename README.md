@@ -39,16 +39,17 @@ The `/ui` dashboard now includes:
 
 - `Unsubscribe events` tab for review workflow
 - `Generate token` tab for one-off footer links and a history table of generated tokens
-- `Email` tab for Cloudflare-native unsubscribe click notifications
+- `Email` tab for SendPulse-powered unsubscribe click notifications
 
 ## Email Notifications
 
-This Worker now supports native email notifications through Cloudflare Email Service.
+This Worker now supports unsubscribe-click alert emails through SendPulse.
 
-- No third-party provider is required for basic unsubscribe-click alerts.
-- The Worker uses the `EMAIL` send-email binding.
+- Preferred auth: static `SENDPULSE_API_KEY` Worker secret.
+- Alternate auth: `SENDPULSE_CLIENT_ID` and `SENDPULSE_CLIENT_SECRET` Worker secrets.
 - Notifications only send when the `Email` tab is enabled and both a recipient and sender address are saved.
-- The sender address must be on a domain onboarded for Cloudflare Email Service.
+- The sender address entered in the UI must already be approved in SendPulse.
+- Your SendPulse SMTP/API profile must be approved before SendPulse will actually send.
 
 Suggested payload shape:
 
