@@ -30,6 +30,27 @@ function redirect(location, status = 302) {
   });
 }
 
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="unsub favicon">
+  <title>unsub favicon</title>
+  <rect width="96" height="96" rx="22" fill="#0d9256"/>
+  <rect x="16" y="53" width="64" height="24" rx="4" fill="none" stroke="#fff" stroke-width="2.8"/>
+  <line x1="48" y1="18" x2="48" y2="50" stroke="#fff" stroke-width="2.8" stroke-linecap="round"/>
+  <polyline points="36,40 48,53 60,40" fill="none" stroke="#fff" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>
+  <line x1="20" y1="20" x2="76" y2="76" stroke="#fbbf24" stroke-width="4" stroke-linecap="round"/>
+  <line x1="76" y1="20" x2="20" y2="76" stroke="#fbbf24" stroke-width="4" stroke-linecap="round"/>
+</svg>`;
+
+function svg(body, status = 200, headers = {}) {
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "cache-control": "public, max-age=3600",
+      ...headers,
+    },
+  });
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -841,6 +862,7 @@ function successPage({ email, autoSuppressed }) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Unsubscribe Request</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <style>
       :root {
         color-scheme: light;
@@ -912,6 +934,7 @@ function errorPage(title, message, status = 400) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${title}</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <style>
       body {
         margin: 0;
@@ -952,6 +975,7 @@ function adminUiPage(env) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Unsubscribe Console</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -2327,6 +2351,14 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/") {
       return redirect("/ui");
+    }
+
+    if (request.method === "GET" && url.pathname === "/favicon.ico") {
+      return redirect("/favicon.svg", 301);
+    }
+
+    if (request.method === "GET" && url.pathname === "/favicon.svg") {
+      return svg(FAVICON_SVG);
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
