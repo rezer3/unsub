@@ -48,6 +48,11 @@ function normalizeEmail(value) {
   return cleanText(value, 320).toLowerCase();
 }
 
+function isValidEmail(value) {
+  const email = normalizeEmail(value);
+  return !!email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 function getBearerToken(request) {
   const header = cleanText(request.headers.get("Authorization") || "", 2000);
   if (!header.toLowerCase().startsWith("bearer ")) return "";
@@ -70,6 +75,41 @@ async function d1All(db, sql, bindings = []) {
   const stmt = db.prepare(sql);
   const bound = bindings.length ? stmt.bind(...bindings) : stmt;
   return bound.all();
+}
+
+async function putJsonSetting(env, key, value) {
+  const settingKey = cleanText(key, 120);
+  if (!settingKey) throw new Error("missing_setting_key");
+  const updatedAt = nowIso();
+
+  await d1Exec(
+    env.UNSUB_DB,
+    `INSERT INTO admin_settings (key, value_json, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key)
+     DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+    [settingKey, JSON.stringify(value || {}), updatedAt]
+  );
+
+  return updatedAt;
+}
+
+async function getJsonSetting(env, key) {
+  const settingKey = cleanText(key, 120);
+  if (!settingKey) return null;
+
+  const row = await d1First(
+    env.UNSUB_DB,
+    `SELECT key, value_json, updated_at FROM admin_settings WHERE key = ?`,
+    [settingKey]
+  );
+  if (!row?.value_json) return null;
+
+  try {
+    return JSON.parse(row.value_json);
+  } catch {
+    return null;
+  }
 }
 
 function toBase64(bytes) {
@@ -191,6 +231,163 @@ function buildScopeLabel(event) {
   const scopeType = cleanText(event?.scope_type, 80) || "global";
   const scopeKey = cleanText(event?.scope_key, 200);
   return scopeKey ? `${scopeType}:${scopeKey}` : scopeType;
+}
+
+const EMAIL_NOTIFICATION_SETTINGS_KEY = "email_notifications";
+
+function defaultEmailNotificationSettings() {
+  return {
+    enabled: false,
+    recipient_email: "",
+    sender_email: "",
+    subject_prefix: "[unsub]",
+    updated_at: "",
+    updated_by: "",
+    last_status: "never",
+    last_sent_at: "",
+    last_event_id: "",
+    last_message_id: "",
+    last_error: "",
+  };
+}
+
+function normalizeEmailNotificationSettings(value = {}) {
+  const defaults = defaultEmailNotificationSettings();
+  const normalized = {
+    ...defaults,
+    ...(value && typeof value === "object" ? value : {}),
+  };
+
+  normalized.enabled = !!normalized.enabled;
+  normalized.recipient_email = normalizeEmail(normalized.recipient_email);
+  normalized.sender_email = normalizeEmail(normalized.sender_email);
+  normalized.subject_prefix =
+    cleanText(normalized.subject_prefix, 80) || defaults.subject_prefix;
+  normalized.updated_at = cleanText(normalized.updated_at, 40);
+  normalized.updated_by = cleanText(normalized.updated_by, 200);
+  normalized.last_status = cleanText(normalized.last_status, 40) || defaults.last_status;
+  normalized.last_sent_at = cleanText(normalized.last_sent_at, 40);
+  normalized.last_event_id = cleanText(normalized.last_event_id, 120);
+  normalized.last_message_id = cleanText(normalized.last_message_id, 200);
+  normalized.last_error = cleanText(normalized.last_error, 500);
+  return normalized;
+}
+
+async function getEmailNotificationSettings(env) {
+  const raw = await getJsonSetting(env, EMAIL_NOTIFICATION_SETTINGS_KEY);
+  return normalizeEmailNotificationSettings(raw || {});
+}
+
+async function saveEmailNotificationSettings(env, input = {}) {
+  const settings = normalizeEmailNotificationSettings(input);
+  settings.updated_at = nowIso();
+  await putJsonSetting(env, EMAIL_NOTIFICATION_SETTINGS_KEY, settings);
+  return settings;
+}
+
+async function updateEmailNotificationRuntime(env, patch = {}) {
+  const current = await getEmailNotificationSettings(env);
+  const next = normalizeEmailNotificationSettings({
+    ...current,
+    ...patch,
+  });
+  await putJsonSetting(env, EMAIL_NOTIFICATION_SETTINGS_KEY, next);
+  return next;
+}
+
+async function maybeSendUnsubscribeNotification(env, request, event, claims, suppression) {
+  const settings = await getEmailNotificationSettings(env);
+  if (!settings.enabled) return { ok: false, skipped: "disabled" };
+
+  if (!env.EMAIL || typeof env.EMAIL.send !== "function") {
+    await updateEmailNotificationRuntime(env, {
+      last_status: "error",
+      last_error: "email_binding_missing",
+      last_event_id: event.id,
+      last_message_id: "",
+    });
+    return { ok: false, skipped: "email_binding_missing" };
+  }
+
+  if (!isValidEmail(settings.recipient_email) || !isValidEmail(settings.sender_email)) {
+    await updateEmailNotificationRuntime(env, {
+      last_status: "error",
+      last_error: "email_settings_incomplete",
+      last_event_id: event.id,
+      last_message_id: "",
+    });
+    return { ok: false, skipped: "email_settings_incomplete" };
+  }
+
+  const origin = cleanText(env.PUBLIC_BASE_URL || "", 500) || new URL(request.url).origin;
+  const payload = claims?.payload || {};
+  const scopeLabel = buildScopeLabel(event);
+  const finalStatus = suppression ? "suppressed" : event.status;
+  const subject = `${settings.subject_prefix} Unsubscribe clicked: ${event.email || "unknown"}`;
+  const lines = [
+    "An unsubscribe link was clicked.",
+    "",
+    `Email: ${event.email || ""}`,
+    `Timestamp: ${event.created_at || ""}`,
+    `Scope: ${scopeLabel}`,
+    `Method: ${event.method || ""}`,
+    `Source: ${event.source || ""}`,
+    `Status: ${finalStatus || ""}`,
+    `Token ID: ${event.token_id || ""}`,
+    `Campaign Source: ${cleanText(payload.source, 120) || ""}`,
+    `Admin UI: ${origin}/ui#unsubscribe-events`,
+  ];
+
+  const htmlBody = `
+    <h1>Unsubscribe clicked</h1>
+    <p>An unsubscribe link was clicked.</p>
+    <ul>
+      <li><strong>Email:</strong> ${event.email || ""}</li>
+      <li><strong>Timestamp:</strong> ${event.created_at || ""}</li>
+      <li><strong>Scope:</strong> ${scopeLabel}</li>
+      <li><strong>Method:</strong> ${event.method || ""}</li>
+      <li><strong>Source:</strong> ${event.source || ""}</li>
+      <li><strong>Status:</strong> ${finalStatus || ""}</li>
+      <li><strong>Token ID:</strong> ${event.token_id || ""}</li>
+    </ul>
+    <p><a href="${origin}/ui#unsubscribe-events">Open the unsubscribe console</a></p>
+  `;
+
+  try {
+    const response = await env.EMAIL.send({
+      to: settings.recipient_email,
+      from: {
+        email: settings.sender_email,
+        name: "Unsubscribe Alerts",
+      },
+      subject,
+      text: lines.filter(Boolean).join("\n"),
+      html: htmlBody,
+    });
+
+    await updateEmailNotificationRuntime(env, {
+      last_status: "sent",
+      last_sent_at: nowIso(),
+      last_event_id: event.id,
+      last_message_id: cleanText(response?.messageId, 200),
+      last_error: "",
+    });
+
+    return {
+      ok: true,
+      message_id: cleanText(response?.messageId, 200) || null,
+    };
+  } catch (error) {
+    const message = cleanText(error?.message || error, 500) || "email_send_failed";
+    await updateEmailNotificationRuntime(env, {
+      last_status: "error",
+      last_event_id: event.id,
+      last_message_id: "",
+      last_error: message,
+    });
+    console.error("unsubscribe_email_notification_failed", message);
+    return { ok: false, error: message };
+  }
 }
 
 async function buildTokenValue(env, payload) {
@@ -518,6 +715,51 @@ async function handleGenerateToken(request, env) {
   });
 }
 
+async function handleGetEmailSettings(env) {
+  const settings = await getEmailNotificationSettings(env);
+  return json({
+    ok: true,
+    settings,
+    provider: "cloudflare_email_service",
+    email_binding_configured: !!env.EMAIL && typeof env.EMAIL.send === "function",
+  });
+}
+
+async function handleUpdateEmailSettings(request, env) {
+  const body = await request.json().catch(() => null);
+  const current = await getEmailNotificationSettings(env);
+  const next = normalizeEmailNotificationSettings({
+    ...current,
+    enabled: !!body?.enabled,
+    recipient_email: body?.recipient_email,
+    sender_email: body?.sender_email,
+    subject_prefix: body?.subject_prefix,
+    updated_by: deriveReviewer(request, body),
+    updated_at: nowIso(),
+  });
+
+  if (next.recipient_email && !isValidEmail(next.recipient_email)) {
+    return json({ ok: false, error: "invalid_recipient_email" }, 400);
+  }
+  if (next.sender_email && !isValidEmail(next.sender_email)) {
+    return json({ ok: false, error: "invalid_sender_email" }, 400);
+  }
+  if (next.enabled && !next.recipient_email) {
+    return json({ ok: false, error: "missing_recipient_email" }, 400);
+  }
+  if (next.enabled && !next.sender_email) {
+    return json({ ok: false, error: "missing_sender_email" }, 400);
+  }
+
+  const saved = await saveEmailNotificationSettings(env, next);
+  return json({
+    ok: true,
+    settings: saved,
+    provider: "cloudflare_email_service",
+    email_binding_configured: !!env.EMAIL && typeof env.EMAIL.send === "function",
+  });
+}
+
 async function handleMarkReviewed(request, env) {
   const body = await request.json().catch(() => null);
   const id = cleanText(body?.id, 120);
@@ -701,6 +943,7 @@ function adminUiPage(env) {
   const uiConfig = JSON.stringify({
     autoSuppress: isTruthy(env.AUTO_SUPPRESS_UNSUB),
     signingSecretConfigured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
+    emailBindingConfigured: !!env.EMAIL && typeof env.EMAIL.send === "function",
   });
 
   return `<!doctype html>
@@ -924,6 +1167,12 @@ function adminUiPage(env) {
       .toolbar.generator-toolbar {
         grid-template-columns: 1.35fr auto;
       }
+      .toolbar.email-toolbar {
+        grid-template-columns: 1fr 1fr;
+      }
+      .toolbar.email-actions-toolbar {
+        grid-template-columns: 1fr auto;
+      }
       .field {
         display: flex;
         flex-direction: column;
@@ -932,6 +1181,36 @@ function adminUiPage(env) {
       .field-inline {
         display: flex;
         align-items: flex-end;
+      }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface-2);
+      }
+      .toggle-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .toggle-label {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--ink);
+      }
+      .toggle-help {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .toggle-input {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--blue);
+        flex-shrink: 0;
       }
       .field-label {
         font-family: var(--mono);
@@ -1303,7 +1582,9 @@ function adminUiPage(env) {
       @media (max-width: 980px) {
         .controls-grid,
         .toolbar.events-toolbar,
-        .toolbar.generator-toolbar {
+        .toolbar.generator-toolbar,
+        .toolbar.email-toolbar,
+        .toolbar.email-actions-toolbar {
           grid-template-columns: 1fr;
         }
         .table-shell {
@@ -1361,6 +1642,7 @@ function adminUiPage(env) {
         <div class="tab-strip" role="tablist" aria-label="Unsubscribe admin tabs">
           <button id="tab-events" class="tab is-active" type="button" data-tab-target="events" role="tab" aria-controls="panel-events" aria-selected="true">Unsubscribe events</button>
           <button id="tab-generate" class="tab" type="button" data-tab-target="generate" role="tab" aria-controls="panel-generate" aria-selected="false">Generate token</button>
+          <button id="tab-email" class="tab" type="button" data-tab-target="email" role="tab" aria-controls="panel-email" aria-selected="false">Email</button>
         </div>
       </section>
 
@@ -1459,6 +1741,46 @@ function adminUiPage(env) {
           </table>
         </section>
       </section>
+
+      <section id="panel-email" class="section-card panel-shell" data-panel="email" role="tabpanel" aria-labelledby="tab-email" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Email notifications</h2>
+            <p class="sub">Get an alert email when someone clicks an unsubscribe link. This uses Cloudflare Email Service, so you do not need SendPulse unless you prefer a third-party provider.</p>
+          </div>
+        </div>
+        <div id="emailNotice" class="notice"></div>
+        <div class="toolbar email-toolbar">
+          <div class="field">
+            <label class="field-label" for="emailRecipient">Notify recipient</label>
+            <input id="emailRecipient" type="email" placeholder="you@example.com" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="emailSender">Sender address</label>
+            <input id="emailSender" type="email" placeholder="alerts@yourdomain.com" />
+          </div>
+        </div>
+        <div class="toolbar email-actions-toolbar">
+          <div class="field">
+            <label class="field-label" for="emailSubjectPrefix">Subject prefix</label>
+            <input id="emailSubjectPrefix" type="text" placeholder="[unsub]" />
+          </div>
+          <div class="field-inline">
+            <button id="saveEmailSettingsBtn" class="btn-primary" type="button">Save email settings</button>
+          </div>
+        </div>
+        <div class="toggle-row" style="margin-top: 12px;">
+          <div class="toggle-copy">
+            <span class="toggle-label">Email me when someone clicks unsubscribe</span>
+            <span class="toggle-help">Turn this off anytime without deleting your saved addresses.</span>
+          </div>
+          <input id="emailEnabled" class="toggle-input" type="checkbox" />
+        </div>
+        <div class="statusbar">
+          <div id="emailSummary" class="status-summary">Loading…</div>
+          <div id="emailLastStatus" class="status-note"></div>
+        </div>
+      </section>
     </div>
 
     <script>
@@ -1468,6 +1790,7 @@ function adminUiPage(env) {
         events: [],
         manualTokens: [],
         latestGenerated: null,
+        emailSettings: null,
       };
 
       const reviewerInput = document.getElementById("reviewer");
@@ -1484,6 +1807,14 @@ function adminUiPage(env) {
       const generatedResult = document.getElementById("generatedResult");
       const generatedTokensBody = document.getElementById("generatedTokensBody");
       const tokensSummary = document.getElementById("tokensSummary");
+      const emailNotice = document.getElementById("emailNotice");
+      const emailRecipientInput = document.getElementById("emailRecipient");
+      const emailSenderInput = document.getElementById("emailSender");
+      const emailSubjectPrefixInput = document.getElementById("emailSubjectPrefix");
+      const emailEnabledInput = document.getElementById("emailEnabled");
+      const saveEmailSettingsBtn = document.getElementById("saveEmailSettingsBtn");
+      const emailSummary = document.getElementById("emailSummary");
+      const emailLastStatus = document.getElementById("emailLastStatus");
       const autoSuppressChip = document.getElementById("autoSuppressChip");
       const signingChip = document.getElementById("signingChip");
       const tabButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
@@ -1534,15 +1865,19 @@ function adminUiPage(env) {
       }
 
       function tabNameFromHash(hash) {
-        return hash === "#generate-token" ? "generate" : "events";
+        if (hash === "#generate-token") return "generate";
+        if (hash === "#email") return "email";
+        return "events";
       }
 
       function tabHashFor(name) {
-        return name === "generate" ? "#generate-token" : "#unsubscribe-events";
+        if (name === "generate") return "#generate-token";
+        if (name === "email") return "#email";
+        return "#unsubscribe-events";
       }
 
       function setActiveTab(name, options = {}) {
-        state.activeTab = name === "generate" ? "generate" : "events";
+        state.activeTab = ["events", "generate", "email"].includes(name) ? name : "events";
         tabButtons.forEach((button) => {
           const active = button.getAttribute("data-tab-target") === state.activeTab;
           button.classList.toggle("is-active", active);
@@ -1606,6 +1941,49 @@ function adminUiPage(env) {
 
         generatorNotice.className = "notice warn";
         generatorNotice.innerHTML = "No <code>UNSUB_SIGNING_SECRET</code> is set yet. Generated links will use unsigned developer tokens for now.";
+      }
+
+      function renderEmailNotice() {
+        if (uiConfig.emailBindingConfigured) {
+          emailNotice.className = "notice ok";
+          emailNotice.innerHTML = "Cloudflare Email Service binding is available. Set a recipient and a sender address on a Cloudflare-managed domain to receive unsubscribe-click alerts.";
+          return;
+        }
+
+        emailNotice.className = "notice warn";
+        emailNotice.innerHTML = "This Worker does not currently have a usable email binding. The settings can still be saved, but notifications will not send until Cloudflare Email Service is active.";
+      }
+
+      function renderEmailSettings() {
+        const settings = state.emailSettings;
+        if (!settings) {
+          emailSummary.textContent = "Loading…";
+          emailLastStatus.textContent = "";
+          return;
+        }
+
+        emailRecipientInput.value = settings.recipient_email || "";
+        emailSenderInput.value = settings.sender_email || "";
+        emailSubjectPrefixInput.value = settings.subject_prefix || "[unsub]";
+        emailEnabledInput.checked = !!settings.enabled;
+
+        emailSummary.textContent = settings.enabled
+          ? "Notifications enabled"
+          : "Notifications disabled";
+
+        if (settings.last_status === "sent" && settings.last_sent_at) {
+          emailLastStatus.textContent = "Last email sent " + formatTimestamp(settings.last_sent_at);
+          return;
+        }
+        if (settings.last_status === "error" && settings.last_error) {
+          emailLastStatus.textContent = "Last error: " + settings.last_error;
+          return;
+        }
+        if (settings.updated_at) {
+          emailLastStatus.textContent = "Settings updated " + formatTimestamp(settings.updated_at);
+          return;
+        }
+        emailLastStatus.textContent = "No email notifications sent yet.";
       }
 
       function renderEvents() {
@@ -1728,6 +2106,17 @@ function adminUiPage(env) {
         setUpdatedLabel();
       }
 
+      async function loadEmailSettings() {
+        const data = await fetchJson("/api/admin/email-settings");
+        state.emailSettings = data.settings || null;
+        if (typeof data.email_binding_configured === "boolean") {
+          uiConfig.emailBindingConfigured = data.email_binding_configured;
+        }
+        renderEmailNotice();
+        renderEmailSettings();
+        setUpdatedLabel();
+      }
+
       async function generateToken() {
         const email = generateEmailInput.value.trim();
         if (!email) {
@@ -1750,6 +2139,24 @@ function adminUiPage(env) {
         generateEmailInput.value = "";
         await loadManualTokens();
         setActiveTab("generate");
+      }
+
+      async function saveEmailSettings() {
+        const data = await postJson("/api/admin/email-settings", {
+          enabled: emailEnabledInput.checked,
+          recipient_email: emailRecipientInput.value.trim(),
+          sender_email: emailSenderInput.value.trim(),
+          subject_prefix: emailSubjectPrefixInput.value.trim(),
+          reviewed_by: reviewerInput.value.trim(),
+        });
+
+        state.emailSettings = data.settings || null;
+        if (typeof data.email_binding_configured === "boolean") {
+          uiConfig.emailBindingConfigured = data.email_binding_configured;
+        }
+        renderEmailNotice();
+        renderEmailSettings();
+        setActiveTab("email");
       }
 
       tabButtons.forEach((button) => {
@@ -1814,10 +2221,20 @@ function adminUiPage(env) {
           window.alert(String(error && error.message ? error.message : error));
         });
       });
+      saveEmailSettingsBtn.addEventListener("click", () => {
+        saveEmailSettings().catch((error) => {
+          window.alert(String(error && error.message ? error.message : error));
+        });
+      });
 
       generateEmailInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           generateToken().catch(() => {});
+        }
+      });
+      emailSubjectPrefixInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          saveEmailSettings().catch(() => {});
         }
       });
       emailFilterInput.addEventListener("keydown", (event) => {
@@ -1830,6 +2247,8 @@ function adminUiPage(env) {
 
       renderMetaChips();
       renderGeneratorNotice();
+      renderEmailNotice();
+      renderEmailSettings();
       renderLatestGenerated();
       setActiveTab(tabNameFromHash(window.location.hash), { skipHash: true });
       setUpdatedLabel();
@@ -1839,6 +2258,10 @@ function adminUiPage(env) {
       });
       loadManualTokens().catch((error) => {
         generatedTokensBody.innerHTML = '<tr><td colspan="7" class="table-msg error">' + escapeHtml(String(error && error.message ? error.message : error)) + '</td></tr>';
+      });
+      loadEmailSettings().catch((error) => {
+        emailSummary.textContent = "Email settings unavailable";
+        emailLastStatus.textContent = String(error && error.message ? error.message : error);
       });
       setInterval(() => {
         loadEvents().catch(() => {});
@@ -1864,12 +2287,14 @@ async function handleUnsubscribeApi(request, env, token) {
     notes: bodyText ? `body:${bodyText.slice(0, 500)}` : "",
   });
   const suppression = await maybeAutoSuppress(env, request, event, claims);
+  const emailNotification = await maybeSendUnsubscribeNotification(env, request, event, claims, suppression);
 
   return json({
     ok: true,
     event_id: event.id,
     status: suppression ? "suppressed" : "received",
     auto_suppressed: !!suppression,
+    email_notified: !!emailNotification?.ok,
   });
 }
 
@@ -1886,6 +2311,7 @@ async function handleUnsubscribePage(request, env, token) {
     event_type: "unsubscribe_requested",
   });
   const suppression = await maybeAutoSuppress(env, request, event, claims);
+  await maybeSendUnsubscribeNotification(env, request, event, claims, suppression);
 
   return html(
     successPage({
@@ -1920,6 +2346,7 @@ export default {
         database,
         auto_suppress_unsub: isTruthy(env.AUTO_SUPPRESS_UNSUB),
         signing_secret_configured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
+        email_binding_configured: !!env.EMAIL && typeof env.EMAIL.send === "function",
       });
     }
 
@@ -1951,6 +2378,12 @@ export default {
       return json({ ok: true, tokens });
     }
 
+    if (request.method === "GET" && url.pathname === "/api/admin/email-settings") {
+      const auth = adminAuthorized(request, env);
+      if (!auth.ok) return json({ ok: false, error: "unauthorized" }, 401);
+      return handleGetEmailSettings(env);
+    }
+
     if (request.method === "POST" && url.pathname === "/api/admin/mark-reviewed") {
       const auth = adminAuthorized(request, env);
       if (!auth.ok) return json({ ok: false, error: "unauthorized" }, 401);
@@ -1961,6 +2394,12 @@ export default {
       const auth = adminAuthorized(request, env);
       if (!auth.ok) return json({ ok: false, error: "unauthorized" }, 401);
       return handleGenerateToken(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/admin/email-settings") {
+      const auth = adminAuthorized(request, env);
+      if (!auth.ok) return json({ ok: false, error: "unauthorized" }, 401);
+      return handleUpdateEmailSettings(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/admin/suppress") {

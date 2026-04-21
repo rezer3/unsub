@@ -7,6 +7,12 @@
   "observability": {
     "enabled": true
   },
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "remote": true
+    }
+  ],
   "d1_databases": [
     {
       "binding": "UNSUB_DB",

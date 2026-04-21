@@ -17,7 +17,9 @@ Cloudflare Worker scaffold for shared email suppression and unsubscribe handling
 - `POST /api/unsubscribe/:token` logs an API unsubscribe event and returns JSON
 - `GET /api/admin/events` returns recent unsubscribe events
 - `GET /api/admin/generated-tokens` returns recently generated manual footer links
+- `GET /api/admin/email-settings` returns unsubscribe email notification settings
 - `POST /api/admin/generate-token` generates a full unsubscribe link for one email and stores it
+- `POST /api/admin/email-settings` saves unsubscribe email notification settings
 - `POST /api/admin/mark-reviewed` marks an event as reviewed
 - `POST /api/admin/suppress` inserts a suppression entry and marks the event suppressed
 
@@ -26,6 +28,7 @@ The migrations create tables for:
 - `email_suppressions`
 - `unsubscribe_events`
 - `manual_unsubscribe_tokens`
+- `admin_settings`
 
 Supported token formats:
 
@@ -36,6 +39,16 @@ The `/ui` dashboard now includes:
 
 - `Unsubscribe events` tab for review workflow
 - `Generate token` tab for one-off footer links and a history table of generated tokens
+- `Email` tab for Cloudflare-native unsubscribe click notifications
+
+## Email Notifications
+
+This Worker now supports native email notifications through Cloudflare Email Service.
+
+- No third-party provider is required for basic unsubscribe-click alerts.
+- The Worker uses the `EMAIL` send-email binding.
+- Notifications only send when the `Email` tab is enabled and both a recipient and sender address are saved.
+- The sender address must be on a domain onboarded for Cloudflare Email Service.
 
 Suggested payload shape:
 
