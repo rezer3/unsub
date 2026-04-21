@@ -711,7 +711,7 @@ function adminUiPage(env) {
     <title>Unsubscribe Console</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
     <style>
       :root {
         color-scheme: light;
@@ -737,7 +737,7 @@ function adminUiPage(env) {
         --blue-light: #eff4ff;
         --slate: #475569;
         --slate-bg: #f1f5f9;
-        --mono: "IBM Plex Mono", monospace;
+        --mono: "Source Sans 3", sans-serif;
         --sans: "Manrope", sans-serif;
         --radius: 7px;
         --radius-lg: 12px;
