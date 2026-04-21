@@ -1,0 +1,16 @@
+{
+  "name": "unsub",
+  "main": "src/index.js",
+  "compatibility_date": "2026-04-21",
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "UNSUB_DB",
+      "database_name": "unsub_db",
+      "database_id": "008af5e5-0400-4303-86e8-b7a67a974a1c",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
