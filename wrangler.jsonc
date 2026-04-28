@@ -7,6 +7,10 @@
   "observability": {
     "enabled": true
   },
+  "vars": {
+    "LEGACY_READ_ONLY": "true",
+    "NEW_UNSUBSCRIBE_CONSOLE_URL": "https://track.theopenchoice.com/admin#unsubscribes"
+  },
   "routes": [
     {
       "pattern": "thecaseup.com",

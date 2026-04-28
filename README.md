@@ -2,6 +2,17 @@
 
 Cloudflare Worker scaffold for shared email suppression and unsubscribe handling.
 
+## Legacy transition
+
+This Worker is now the legacy unsubscribe endpoint. Keep it deployed so old
+`/u/:token` links continue to resolve and log events, but create new unsubscribe
+links in `lpemailintegrationtrack` instead.
+
+With `LEGACY_READ_ONLY=true`, the legacy dashboard disables new manual token
+generation, disables auto-suppression, and rejects new suppression writes. Event
+logging, event review, email notifications, and old token history remain
+available.
+
 ## Resources
 
 - Worker: `unsub`
@@ -18,10 +29,10 @@ Cloudflare Worker scaffold for shared email suppression and unsubscribe handling
 - `GET /api/admin/events` returns recent unsubscribe events
 - `GET /api/admin/generated-tokens` returns recently generated manual footer links
 - `GET /api/admin/email-settings` returns unsubscribe email notification settings
-- `POST /api/admin/generate-token` generates a full unsubscribe link for one email and stores it
+- `POST /api/admin/generate-token` is rejected while `LEGACY_READ_ONLY=true`
 - `POST /api/admin/email-settings` saves unsubscribe email notification settings
 - `POST /api/admin/mark-reviewed` marks an event as reviewed
-- `POST /api/admin/suppress` inserts a suppression entry and marks the event suppressed
+- `POST /api/admin/suppress` is rejected while `LEGACY_READ_ONLY=true`
 
 The migrations create tables for:
 

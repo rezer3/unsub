@@ -64,6 +64,14 @@ function isTruthy(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
 }
 
+function isLegacyReadOnly(env) {
+  return isTruthy(env.LEGACY_READ_ONLY);
+}
+
+function newUnsubscribeConsoleUrl(env) {
+  return cleanText(env.NEW_UNSUBSCRIBE_CONSOLE_URL || "https://track.theopenchoice.com/admin#unsubscribes", 500);
+}
+
 function cleanText(value, max = 500) {
   const text = String(value ?? "").trim();
   if (!text) return "";
@@ -927,6 +935,7 @@ async function upsertSuppression(env, input) {
 }
 
 async function maybeAutoSuppress(env, request, event, claims) {
+  if (isLegacyReadOnly(env)) return null;
   if (!isTruthy(env.AUTO_SUPPRESS_UNSUB)) return null;
 
   const payload = claims?.payload || {};
@@ -1019,6 +1028,15 @@ async function listAdminEvents(env, url) {
 }
 
 async function handleGenerateToken(request, env) {
+  if (isLegacyReadOnly(env)) {
+    return json({
+      ok: false,
+      error: "legacy_worker_read_only",
+      message: "This legacy unsubscribe Worker no longer creates new links. Create new unsubscribe links in lpemailintegrationtrack.",
+      new_console_url: newUnsubscribeConsoleUrl(env),
+    }, 410);
+  }
+
   const body = await request.json().catch(() => null);
 
   let tokenRow;
@@ -1120,6 +1138,15 @@ async function handleMarkReviewed(request, env) {
 }
 
 async function handleSuppress(request, env) {
+  if (isLegacyReadOnly(env)) {
+    return json({
+      ok: false,
+      error: "legacy_worker_read_only",
+      message: "This legacy unsubscribe Worker no longer creates suppressions. Review old events here and use the Email Tracking Console for new unsubscribe handling.",
+      new_console_url: newUnsubscribeConsoleUrl(env),
+    }, 410);
+  }
+
   const body = await request.json().catch(() => null);
   const eventId = cleanText(body?.id || body?.event_id, 120);
   let event = null;
@@ -1273,6 +1300,8 @@ function errorPage(title, message, status = 400) {
 function adminUiPage(env) {
   const uiConfig = JSON.stringify({
     autoSuppress: isTruthy(env.AUTO_SUPPRESS_UNSUB),
+    legacyReadOnly: isLegacyReadOnly(env),
+    newConsoleUrl: newUnsubscribeConsoleUrl(env),
     signingSecretConfigured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
     sendpulseConfigured: isSendPulseConfigured(env),
     sendpulseMode: getSendPulseMode(env),
@@ -1481,6 +1510,20 @@ function adminUiPage(env) {
         color: var(--slate);
         background: var(--slate-bg);
         border-color: var(--border-2);
+      }
+      .legacy-banner {
+        background: var(--amber-bg);
+        border: 1px solid var(--amber-border);
+        border-radius: var(--radius-lg);
+        color: var(--amber);
+        font-size: 14px;
+        line-height: 1.45;
+        margin-top: 18px;
+        padding: 14px 16px;
+      }
+      .legacy-banner a {
+        color: var(--amber);
+        font-weight: 700;
       }
       .toolbar,
       .tab-strip,
@@ -2062,8 +2105,13 @@ function adminUiPage(env) {
           Use <code>/u/:token</code> for body-link clicks and <code>POST /api/unsubscribe/:token</code> for endpoint testing.
         </p>
         <div class="meta-strip">
+          <span id="legacyChip" class="meta-chip"></span>
           <span id="autoSuppressChip" class="meta-chip"></span>
           <span id="signingChip" class="meta-chip"></span>
+        </div>
+        <div id="legacyBanner" class="legacy-banner" hidden>
+          Legacy transition mode is active. Existing links still resolve and log events here, but new unsubscribe links should be created in
+          <a href="${escapeHtml(newUnsubscribeConsoleUrl(env))}" target="_blank" rel="noreferrer">lpemailintegrationtrack</a>.
         </div>
         <div class="controls-grid">
           <div class="field">
@@ -2259,6 +2307,8 @@ function adminUiPage(env) {
       const emailLastStatus = document.getElementById("emailLastStatus");
       const autoSuppressChip = document.getElementById("autoSuppressChip");
       const signingChip = document.getElementById("signingChip");
+      const legacyChip = document.getElementById("legacyChip");
+      const legacyBanner = document.getElementById("legacyBanner");
       const tabButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
       const panels = Array.from(document.querySelectorAll("[data-panel]"));
 
@@ -2299,8 +2349,15 @@ function adminUiPage(env) {
       }
 
       function renderMetaChips() {
+        legacyChip.hidden = !uiConfig.legacyReadOnly;
+        legacyChip.className = "meta-chip warn";
+        legacyChip.textContent = "Legacy read-only";
+        legacyBanner.hidden = !uiConfig.legacyReadOnly;
+
         autoSuppressChip.className = "meta-chip " + (uiConfig.autoSuppress ? "ok" : "warn");
-        autoSuppressChip.textContent = uiConfig.autoSuppress ? "Auto suppress on" : "Auto suppress off";
+        autoSuppressChip.textContent = uiConfig.legacyReadOnly
+          ? "Auto suppress disabled by legacy mode"
+          : (uiConfig.autoSuppress ? "Auto suppress on" : "Auto suppress off");
 
         signingChip.className = "meta-chip " + (uiConfig.signingSecretConfigured ? "ok" : "neutral");
         signingChip.textContent = uiConfig.signingSecretConfigured ? "Signed tokens ready" : "Unsigned token fallback";
@@ -2375,6 +2432,14 @@ function adminUiPage(env) {
       }
 
       function renderGeneratorNotice() {
+        if (uiConfig.legacyReadOnly) {
+          generatorNotice.className = "notice warn";
+          generatorNotice.innerHTML = 'This legacy Worker is read-only for new links. Use <a href="' + escapeHtml(uiConfig.newConsoleUrl || "https://track.theopenchoice.com/admin#unsubscribes") + '" target="_blank" rel="noreferrer">lpemailintegrationtrack</a> for new unsubscribe links.';
+          generateEmailInput.disabled = true;
+          generateBtn.disabled = true;
+          return;
+        }
+
         if (uiConfig.signingSecretConfigured) {
           generatorNotice.className = "notice ok";
           generatorNotice.innerHTML = "Signed token mode is active. Generated links are ready to use in the Gmail footer.";
@@ -2844,6 +2909,8 @@ export default {
         ok: database === "ok",
         service: "unsub",
         database,
+        legacy_read_only: isLegacyReadOnly(env),
+        new_unsubscribe_console_url: newUnsubscribeConsoleUrl(env),
         auto_suppress_unsub: isTruthy(env.AUTO_SUPPRESS_UNSUB),
         signing_secret_configured: !!cleanText(env.UNSUB_SIGNING_SECRET || "", 500),
         email_notification_provider: "sendpulse",
